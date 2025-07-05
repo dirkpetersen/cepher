@@ -8,49 +8,26 @@ package_update: true
 package_upgrade: true
 
 packages:
-  # Base system packages
+  # Base system packages (available in base repos)
   - epel-release
   - dnf-utils
   - curl
   - wget
   - vim
-  - htop
   - tmux
-  - mc
   - jq
   
-  # NFS client support
+  # Basic storage and network tools (base repos)
   - nfs-utils
-  - nfs4-acl-tools
-  
-  # SMB/CIFS client support
-  - cifs-utils
-  - samba-client
-  
-  # CephFS support
-  - ceph-fuse
   - fuse
   - fuse3
-  
-  # S3 client tools
-  - s3cmd
-  - awscli
-  
-  # iSCSI client support
   - iscsi-initiator-utils
   - sg3_utils
   - device-mapper-multipath
-  
-  # NVMe-oF client support
   - nvme-cli
-  - nvmetcli
-  
-  # Additional storage and network tools
   - lsscsi
   - parted
   - xfsprogs
-  - ext4-utils
-  - btrfs-progs
   - net-tools
   - tcpdump
   - nmap
@@ -66,6 +43,9 @@ runcmd:
   
   # Enable CodeReady Builder repository for additional packages
   - /usr/bin/crb enable
+  
+  # Install EPEL-dependent packages
+  - dnf install -y htop mc nfs4-acl-tools cifs-utils samba-client awscli nvmetcli iftop iotop
   
   # Add Ceph Squid repository for Rocky Linux 9
   - |
@@ -101,7 +81,7 @@ runcmd:
   # Clean cache and install Ceph packages after repository is configured
   - dnf clean all
   - dnf makecache
-  - dnf install -y --refresh ceph-common
+  - dnf install -y --refresh ceph-common ceph-fuse s3cmd
   
   # Verify installation
   - ceph --version || echo "Ceph installation failed"
@@ -258,8 +238,8 @@ write_files:
 timezone: UTC
 
 # Configure SSH
-ssh_pwauth: false
-disable_root: true
+#ssh_pwauth: false
+#disable_root: true
 
 # System users (rocky user already exists)
 users:

@@ -9,8 +9,8 @@
 
 # Configuration Variables
 : "${AWS_REGION:="us-west-2"}"
-: "${EC2_TYPE:="t3.medium"}"
-: "${AMI_IMAGE:="ami-0fadb4bc4d6071e9e"}"  # x86: ami-0fadb4bc4d6071e9e, arm: ami-03be04a3da3a40226
+: "${EC2_TYPE:="a1.medium"}"    # arm a1.medium x86:t3a.small x86 with disk: c6id.large
+: "${AMI_IMAGE:="ami-03be04a3da3a40226"}"  # x86: ami-0fadb4bc4d6071e9e, arm: ami-03be04a3da3a40226
 : "${ROOT_VOLUME_SIZE:="20"}"
 : "${INSTANCE_NAME:="ceph-client"}" 
 : "${DOMAIN:="ai.oregonstate.edu"}"
@@ -143,6 +143,7 @@ if [[ "$HOSTED_ZONE_ID" != "None" && -n "$HOSTED_ZONE_ID" ]]; then
 fi
 
 # Output summary
+EC2_KEY_FILE2=$(echo $EC2_KEY_FILE | sed "s|$HOME|~|")
 echo
 echo "=== Ceph Client Ready ==="
 echo "Instance: ${INSTANCE_ID}"
@@ -150,6 +151,7 @@ echo "FQDN: ${FQDN}"
 echo "Public IP: ${PUBLIC_IP}"
 echo "Private IP: ${PRIVATE_IP}"
 echo
-echo "SSH: ssh -i '${EC2_KEY_FILE/#$HOME/~}' ${EC2_USER}@${FQDN}"
-echo
 echo "Supported protocols: NFS, SMB/CIFS, CephFS, S3/RadosGW, iSCSI, NVMe-oF"
+echo
+echo "ssh -i ${EC2_KEY_FILE2} ${EC2_USER}@${FQDN}"
+echo

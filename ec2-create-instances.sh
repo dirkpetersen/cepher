@@ -68,7 +68,7 @@ fi
 : "${EC2_SECURITY_GROUPS:="SSH-HTTP-ICMP ceph-cluster-sg"}"
 : "${EBS_TYPE:="st1"}"
 : "${EBS_SIZE:="125"}"
-: "${EBS_QTY:="7"}" #: "normally 6"
+: "${EBS_QTY:="6"}" #: "normally 6"
 
 function discover_or_launch_instances() {
     echo "Discovering existing instances and launching missing ones up to target count: ${NUM_INSTANCES}..."
