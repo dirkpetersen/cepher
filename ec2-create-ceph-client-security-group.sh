@@ -2,7 +2,7 @@
 
 # Show help if requested
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Ceph Cluster Security Group Creation Script"
+    echo "Ceph Client Security Group Creation Script"
     echo ""
     echo "Usage: $0 [vpc-id]"
     echo ""
@@ -11,7 +11,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
     echo ""
     echo "Environment Variables:"
     echo "  VPC_ID          VPC ID (alternative to command line argument)"
-    echo "  SG_NAME         Security group name (default: ceph-cluster-sg)"
+    echo "  SG_NAME         Security group name (default: ceph-client-sg)"
     echo "  SG_DESCRIPTION  Security group description"
     echo "  AWS_REGION      AWS region (default: us-west-2)"
     echo ""
@@ -57,8 +57,8 @@ if [[ ! "$VPC_ID" =~ ^vpc-[0-9a-f]{8,17}$ ]]; then
 fi
 
 # Variables - Can be overridden by environment variables
-: "${SG_NAME:="ceph-cluster-sg"}"
-: "${SG_DESCRIPTION:="Security Group for Ceph Cluster Inter-node Communication"}"
+: "${SG_NAME:="ceph-client-sg"}"
+: "${SG_DESCRIPTION:="Security Group for Ceph Client Access (NFS, SMB, CephFS, S3, iSCSI, NVMe-oF)"}"
 : "${AWS_REGION:="us-west-2"}"
 REGION="${AWS_REGION}"
 
@@ -68,7 +68,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${YELLOW}Creating Ceph Cluster Security Group...${NC}"
+echo -e "${YELLOW}Creating Ceph Client Security Group...${NC}"
 echo -e "VPC ID: ${GREEN}$VPC_ID${NC}"
 echo -e "Region: ${GREEN}$REGION${NC}"
 echo -e "Security Group Name: ${GREEN}$SG_NAME${NC}"
@@ -121,21 +121,21 @@ else
     fi
 fi
 
-# Add tags to the security group (optional)
+# Add tags to the security group
 echo -e "${YELLOW}Adding tags to security group...${NC}"
 if aws ec2 create-tags \
     --resources "$SG_ID" \
-    --tags Key=Name,Value="$SG_NAME" Key=Purpose,Value="Ceph Cluster" \
+    --tags Key=Name,Value="$SG_NAME" Key=Purpose,Value="Ceph Client Access" \
     --region "$REGION" 2>/dev/null; then
     echo -e "${GREEN}✓ Tags added successfully${NC}"
 else
     echo -e "${YELLOW}⚠ Could not add tags (insufficient permissions, but security group still functional)${NC}"
 fi
 
-echo -e "${YELLOW}Adding ingress rules...${NC}"
+echo -e "${YELLOW}Adding ingress rules for client access...${NC}"
 
-# Function to add ingress rule
-add_ingress_rule() {
+# Function to add ingress rule from anywhere (0.0.0.0/0)
+add_public_ingress_rule() {
     local port=$1
     local protocol=$2
     local description=$3
@@ -145,11 +145,11 @@ add_ingress_rule() {
         --group-id "$SG_ID" \
         --protocol "$protocol" \
         --port "$port" \
-        --source-group "$SG_ID" \
+        --cidr "0.0.0.0/0" \
         --region "$REGION" 2>&1)
     
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ Added rule: $description (Port: $port)${NC}"
+        echo -e "${GREEN}✓ Added rule: $description (Port: $port) - Public access${NC}"
     else
         if echo "$error_output" | grep -q "InvalidPermission.Duplicate"; then
             echo -e "${YELLOW}⚠ Rule already exists: $description (Port: $port)${NC}"
@@ -160,8 +160,8 @@ add_ingress_rule() {
     fi
 }
 
-# Function to add port range rule
-add_port_range_rule() {
+# Function to add port range rule from anywhere
+add_public_port_range_rule() {
     local from_port=$1
     local to_port=$2
     local protocol=$3
@@ -172,11 +172,11 @@ add_port_range_rule() {
         --group-id "$SG_ID" \
         --protocol "$protocol" \
         --port "$from_port-$to_port" \
-        --source-group "$SG_ID" \
+        --cidr "0.0.0.0/0" \
         --region "$REGION" 2>&1)
     
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ Added rule: $description (Ports: $from_port-$to_port)${NC}"
+        echo -e "${GREEN}✓ Added rule: $description (Ports: $from_port-$to_port) - Public access${NC}"
     else
         if echo "$error_output" | grep -q "InvalidPermission.Duplicate"; then
             echo -e "${YELLOW}⚠ Rule already exists: $description (Ports: $from_port-$to_port)${NC}"
@@ -187,69 +187,50 @@ add_port_range_rule() {
     fi
 }
 
-# Ceph Monitor ports
-add_ingress_rule "3300" "tcp" "Ceph Monitor (new default)"
-add_ingress_rule "6789" "tcp" "Ceph Monitor (legacy)"
-
-# OSD/MGR/MDS port range
-add_port_range_rule "6800" "7300" "tcp" "Ceph OSD/MGR/MDS services"
-
-# Ceph Dashboard ports
-add_ingress_rule "8080" "tcp" "Ceph Dashboard HTTP"
-add_ingress_rule "8443" "tcp" "Ceph Dashboard HTTPS"
-
-# RGW ports
-add_ingress_rule "7480" "tcp" "Ceph RGW HTTP"
-add_ingress_rule "7481" "tcp" "Ceph RGW HTTPS"
-add_ingress_rule "80" "tcp" "HTTP (RGW alternative)"
-add_ingress_rule "443" "tcp" "HTTPS (RGW alternative)"
-
-# iSCSI Gateway (if used)
-add_ingress_rule "3260" "tcp" "iSCSI target"
-
-# SSH for management (optional but recommended)
-add_ingress_rule "22" "tcp" "SSH management"
-
-# NTP for time synchronization (important for Ceph)
-add_ingress_rule "123" "udp" "NTP time sync"
-
-# CephFS client access (kernel client and ceph-fuse)
-add_port_range_rule "1024" "65535" "tcp" "CephFS client ports"
+# SSH for management
+add_public_ingress_rule "22" "tcp" "SSH management"
 
 # NFS client access
-add_ingress_rule "2049" "tcp" "NFS"
-add_ingress_rule "111" "tcp" "NFS portmapper"
-add_ingress_rule "111" "udp" "NFS portmapper UDP"
-add_port_range_rule "32768" "65535" "tcp" "NFS dynamic ports"
-add_port_range_rule "32768" "65535" "udp" "NFS dynamic ports UDP"
+add_public_ingress_rule "2049" "tcp" "NFS"
+add_public_ingress_rule "111" "tcp" "NFS portmapper"
+add_public_ingress_rule "111" "udp" "NFS portmapper UDP"
 
 # SMB/CIFS client access
-add_ingress_rule "445" "tcp" "SMB/CIFS"
-add_ingress_rule "139" "tcp" "NetBIOS Session Service"
-add_ingress_rule "137" "udp" "NetBIOS Name Service"
-add_ingress_rule "138" "udp" "NetBIOS Datagram Service"
+add_public_ingress_rule "445" "tcp" "SMB/CIFS"
+add_public_ingress_rule "139" "tcp" "NetBIOS Session Service"
+add_public_ingress_rule "137" "udp" "NetBIOS Name Service"
+add_public_ingress_rule "138" "udp" "NetBIOS Datagram Service"
 
-# S3 RadosGW client access (already covered by RGW ports above, but adding for clarity)
-# Ports 80, 443, 7480, 7481 already added for RGW
+# S3 RadosGW client access
+add_public_ingress_rule "80" "tcp" "HTTP (S3/RGW)"
+add_public_ingress_rule "443" "tcp" "HTTPS (S3/RGW)"
+add_public_ingress_rule "7480" "tcp" "Ceph RGW HTTP"
+add_public_ingress_rule "7481" "tcp" "Ceph RGW HTTPS"
 
-# iSCSI client access (port 3260 already added above)
-# Additional iSCSI related ports for discovery and management
-add_port_range_rule "860" "861" "tcp" "iSCSI additional ports"
+# iSCSI client access
+add_public_ingress_rule "3260" "tcp" "iSCSI target"
+add_public_port_range_rule "860" "861" "tcp" "iSCSI additional ports"
 
-# NVMe-oF (NVMe over TCP) client access
-add_ingress_rule "4420" "tcp" "NVMe-oF TCP default"
-add_port_range_rule "4420" "4430" "tcp" "NVMe-oF TCP range"
+# NVMe-oF (NVMe over TCP) client access  
+add_public_ingress_rule "4420" "tcp" "NVMe-oF TCP default"
+add_public_port_range_rule "4420" "4430" "tcp" "NVMe-oF TCP range"
+
+# CephFS direct client access (for ceph-fuse and kernel client)
+# Note: CephFS clients need to connect to MON and OSD ports
+add_public_ingress_rule "3300" "tcp" "Ceph Monitor (new default)"
+add_public_ingress_rule "6789" "tcp" "Ceph Monitor (legacy)"
+add_public_port_range_rule "6800" "7300" "tcp" "Ceph OSD/MGR/MDS services"
 
 # Add ICMP for ping/troubleshooting
 error_output=$(aws ec2 authorize-security-group-ingress \
     --group-id "$SG_ID" \
     --protocol "icmp" \
     --port "-1" \
-    --source-group "$SG_ID" \
+    --cidr "0.0.0.0/0" \
     --region "$REGION" 2>&1)
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ Added rule: ICMP for ping/troubleshooting${NC}"
+    echo -e "${GREEN}✓ Added rule: ICMP for ping/troubleshooting - Public access${NC}"
 else
     if echo "$error_output" | grep -q "InvalidPermission.Duplicate"; then
         echo -e "${YELLOW}⚠ Rule already exists: ICMP for ping/troubleshooting${NC}"
@@ -265,10 +246,18 @@ echo -e "Security Group Name: ${GREEN}$SG_NAME${NC}"
 echo -e "VPC ID: ${GREEN}$VPC_ID${NC}"
 echo -e "Region: ${GREEN}$REGION${NC}"
 
-echo -e "\n${YELLOW}To attach this security group to your Ceph nodes, use:${NC}"
+echo -e "\n${YELLOW}Client protocols supported:${NC}"
+echo -e "${GREEN}✓ NFS (Network File System) - Port 2049, 111${NC}"
+echo -e "${GREEN}✓ SMB/CIFS - Ports 445, 139, 137, 138${NC}"
+echo -e "${GREEN}✓ CephFS - Ports 3300, 6789, 6800-7300${NC}"
+echo -e "${GREEN}✓ S3/RadosGW - Ports 80, 443, 7480, 7481${NC}"
+echo -e "${GREEN}✓ iSCSI - Port 3260, 860-861${NC}"
+echo -e "${GREEN}✓ NVMe-oF - Ports 4420-4430${NC}"
+
+echo -e "\n${YELLOW}To attach this security group to your Ceph client, use:${NC}"
 echo -e "${GREEN}aws ec2 modify-instance-attribute --instance-id <instance-id> --groups $SG_ID --region $REGION${NC}"
 
 echo -e "\n${YELLOW}To view the security group rules:${NC}"
 echo -e "${GREEN}aws ec2 describe-security-groups --group-ids $SG_ID --region $REGION${NC}"
 
-echo -e "\n${GREEN}Ceph cluster security group setup completed!${NC}"
+echo -e "\n${GREEN}Ceph client security group setup completed!${NC}"

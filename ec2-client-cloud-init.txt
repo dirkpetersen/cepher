@@ -1,0 +1,294 @@
+#cloud-config
+
+# Ceph Client Instance Cloud-Init Configuration
+# This cloud-init script prepares an EC2 instance to function as a Ceph client
+# with support for multiple protocols: NFS, SMB, CephFS, S3, iSCSI, NVMe-oF
+
+package_update: true
+package_upgrade: true
+
+packages:
+  # Base system packages
+  - epel-release
+  - dnf-utils
+  - curl
+  - wget
+  - vim
+  - htop
+  - tmux
+  - mc
+  - jq
+  
+  # NFS client support
+  - nfs-utils
+  - nfs4-acl-tools
+  
+  # SMB/CIFS client support
+  - cifs-utils
+  - samba-client
+  
+  # CephFS support
+  - ceph-fuse
+  - fuse
+  - fuse3
+  
+  # S3 client tools
+  - s3cmd
+  - awscli
+  
+  # iSCSI client support
+  - iscsi-initiator-utils
+  - sg3_utils
+  - device-mapper-multipath
+  
+  # NVMe-oF client support
+  - nvme-cli
+  - nvmetcli
+  
+  # Additional storage and network tools
+  - lsscsi
+  - parted
+  - xfsprogs
+  - ext4-utils
+  - btrfs-progs
+  - net-tools
+  - tcpdump
+  - nmap
+  - telnet
+
+# Enable and start necessary services
+runcmd:
+  # Update system
+  - dnf update -y
+  
+  # Ensure EPEL is properly configured
+  - dnf install -y epel-release
+  
+  # Enable CodeReady Builder repository for additional packages
+  - /usr/bin/crb enable
+  
+  # Add Ceph Squid repository for Rocky Linux 9
+  - |
+    cat > /etc/yum.repos.d/ceph.repo << 'EOF'
+    [ceph]
+    name=Ceph packages for Enterprise Linux 9 - $basearch
+    baseurl=https://download.ceph.com/rpm-squid/el9/$basearch
+    enabled=1
+    priority=2
+    gpgcheck=1
+    gpgkey=https://download.ceph.com/keys/release.asc
+    
+    [ceph-noarch]
+    name=Ceph noarch packages for Enterprise Linux 9
+    baseurl=https://download.ceph.com/rpm-squid/el9/noarch
+    enabled=1
+    priority=2
+    gpgcheck=1
+    gpgkey=https://download.ceph.com/keys/release.asc
+    
+    [ceph-source]
+    name=Ceph source packages for Enterprise Linux 9
+    baseurl=https://download.ceph.com/rpm-squid/el9/SRPMS
+    enabled=0
+    priority=2
+    gpgcheck=1
+    gpgkey=https://download.ceph.com/keys/release.asc
+    EOF
+  
+  # Import Ceph GPG key to avoid prompts
+  - rpm --import https://download.ceph.com/keys/release.asc
+  
+  # Clean cache and install Ceph packages after repository is configured
+  - dnf clean all
+  - dnf makecache
+  - dnf install -y --refresh ceph-common
+  
+  # Verify installation
+  - ceph --version || echo "Ceph installation failed"
+  
+  # Install scratch-dna benchmark tool
+  - wget -O /usr/local/bin/scratch-dna https://github.com/FredHutch/sc-benchmark/raw/refs/heads/master/bin/scratch-dna-go_linux-amd64
+  - chmod +x /usr/local/bin/scratch-dna
+  - echo "scratch-dna benchmark tool installed in /usr/local/bin/"
+  
+  # Configure and start iSCSI service
+  - systemctl enable iscsid
+  - systemctl start iscsid
+  - systemctl enable iscsi
+  
+  # Configure multipath for iSCSI (if needed)
+  - systemctl enable multipathd
+  - systemctl start multipathd
+  
+  # Load NVMe-oF modules
+  - modprobe nvme-fabrics
+  - modprobe nvme-tcp
+  - echo "nvme-fabrics" >> /etc/modules-load.d/nvme.conf
+  - echo "nvme-tcp" >> /etc/modules-load.d/nvme.conf
+  
+  # Create mount points for various protocols
+  - mkdir -p /mnt/cephfs
+  - mkdir -p /mnt/nfs
+  - mkdir -p /mnt/smb
+  - mkdir -p /mnt/iscsi
+  - mkdir -p /mnt/nvme
+  
+  # Set up basic Ceph configuration directory
+  - mkdir -p /etc/ceph
+  - chmod 755 /etc/ceph
+  
+  # Create directories for client tools
+  - mkdir -p /opt/ceph-tools
+  - mkdir -p /var/log/ceph-client
+  
+  # Configure NFS client
+  - systemctl enable nfs-client.target
+  - systemctl start nfs-client.target
+  
+  # Set up some basic performance tuning for storage clients
+  - echo 'net.core.rmem_default = 262144' >> /etc/sysctl.d/99-ceph-client.conf
+  - echo 'net.core.rmem_max = 16777216' >> /etc/sysctl.d/99-ceph-client.conf
+  - echo 'net.core.wmem_default = 262144' >> /etc/sysctl.d/99-ceph-client.conf
+  - echo 'net.core.wmem_max = 16777216' >> /etc/sysctl.d/99-ceph-client.conf
+  - sysctl -p /etc/sysctl.d/99-ceph-client.conf
+
+# Write configuration files
+write_files:
+  # Basic s3cmd configuration template
+  - path: /opt/ceph-tools/s3cfg.template
+    content: |
+      [default]
+      access_key = YOUR_ACCESS_KEY
+      secret_key = YOUR_SECRET_KEY
+      host_base = YOUR_CEPH_RGW_ENDPOINT
+      host_bucket = YOUR_CEPH_RGW_ENDPOINT
+      bucket_location = us-east-1
+      use_https = False
+      signature_v2 = True
+    permissions: '0644'
+  
+  # Basic Ceph configuration template
+  - path: /opt/ceph-tools/ceph.conf.template
+    content: |
+      [global]
+      fsid = YOUR_CLUSTER_FSID
+      mon initial members = YOUR_MON_HOSTS
+      mon host = YOUR_MON_IPS
+      public network = YOUR_PUBLIC_NETWORK
+      cluster network = YOUR_CLUSTER_NETWORK
+      auth cluster required = cephx
+      auth service required = cephx
+      auth client required = cephx
+    permissions: '0644'
+  
+  # Helper script for CephFS mounting
+  - path: /opt/ceph-tools/mount-cephfs.sh
+    content: |
+      #!/bin/bash
+      # CephFS Mount Helper Script
+      # Usage: ./mount-cephfs.sh <mon_host> <mount_point> [options]
+      
+      MON_HOST=${1:-"ceph-mon.example.com:6789"}
+      MOUNT_POINT=${2:-"/mnt/cephfs"}
+      CEPH_USER=${3:-"admin"}
+      
+      echo "Mounting CephFS from ${MON_HOST} to ${MOUNT_POINT}"
+      
+      # Using ceph-fuse
+      ceph-fuse ${MOUNT_POINT} -m ${MON_HOST} --name client.${CEPH_USER}
+      
+      # Alternative: kernel client
+      # mount -t ceph ${MON_HOST}:/ ${MOUNT_POINT} -o name=${CEPH_USER}
+    permissions: '0755'
+  
+  # Helper script for iSCSI target discovery and login
+  - path: /opt/ceph-tools/iscsi-connect.sh
+    content: |
+      #!/bin/bash
+      # iSCSI Connection Helper Script
+      # Usage: ./iscsi-connect.sh <gateway_ip> [target_name]
+      
+      GATEWAY_IP=${1}
+      TARGET_NAME=${2}
+      
+      if [[ -z "${GATEWAY_IP}" ]]; then
+          echo "Usage: $0 <gateway_ip> [target_name]"
+          exit 1
+      fi
+      
+      echo "Discovering iSCSI targets on ${GATEWAY_IP}..."
+      iscsiadm -m discovery -t st -p ${GATEWAY_IP}
+      
+      if [[ -n "${TARGET_NAME}" ]]; then
+          echo "Logging into target: ${TARGET_NAME}"
+          iscsiadm -m node -T ${TARGET_NAME} -p ${GATEWAY_IP} --login
+      else
+          echo "Available targets discovered. Use 'iscsiadm -m node --login' to connect to all."
+      fi
+    permissions: '0755'
+  
+  # Helper script for NVMe-oF connections
+  - path: /opt/ceph-tools/nvme-connect.sh
+    content: |
+      #!/bin/bash
+      # NVMe-oF Connection Helper Script
+      # Usage: ./nvme-connect.sh <gateway_ip> <nqn> [port]
+      
+      GATEWAY_IP=${1}
+      NQN=${2}
+      PORT=${3:-4420}
+      
+      if [[ -z "${GATEWAY_IP}" || -z "${NQN}" ]]; then
+          echo "Usage: $0 <gateway_ip> <nqn> [port]"
+          echo "Example: $0 192.168.1.100 nqn.2016-06.io.spdk:cnode1"
+          exit 1
+      fi
+      
+      echo "Connecting to NVMe-oF target..."
+      echo "Gateway: ${GATEWAY_IP}:${PORT}"
+      echo "NQN: ${NQN}"
+      
+      nvme connect -t tcp -a ${GATEWAY_IP} -s ${PORT} -n ${NQN}
+      
+      echo "Listing connected NVMe devices:"
+      nvme list
+    permissions: '0755'
+
+# Set timezone
+timezone: UTC
+
+# Configure SSH
+ssh_pwauth: false
+disable_root: true
+
+# System users (rocky user already exists)
+users:
+  - default
+
+# Final message
+final_message: |
+  Ceph client instance configuration completed!
+  
+  Available client tools and protocols:
+  - CephFS: Use ceph-fuse or kernel client
+  - NFS: Standard NFS client tools available  
+  - SMB/CIFS: Use mount.cifs for SMB shares
+  - S3: s3cmd and awscli available for RadosGW
+  - iSCSI: open-iscsi tools for block storage
+  - NVMe-oF: nvme-cli for NVMe over Fabrics
+  
+  Helper scripts available in /opt/ceph-tools/:
+  - mount-cephfs.sh: CephFS mounting helper
+  - iscsi-connect.sh: iSCSI discovery and login
+  - nvme-connect.sh: NVMe-oF connection helper
+  - s3cfg.template: S3 configuration template
+  - ceph.conf.template: Ceph configuration template
+  
+  Mount points created:
+  - /mnt/cephfs (for CephFS)
+  - /mnt/nfs (for NFS)
+  - /mnt/smb (for SMB/CIFS)
+  - /mnt/iscsi (for iSCSI block devices)
+  - /mnt/nvme (for NVMe-oF devices)
+  
+  The system is ready to connect to your Ceph cluster!
