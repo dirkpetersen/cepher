@@ -9,6 +9,7 @@ The toolkit provides end-to-end automation for:
 - EBS volume management and attachment
 - Ceph cluster bootstrapping and node orchestration
 - Cross-host SSH key distribution and file management
+- Ceph client deployment with multi-protocol support
 - Lambda-based monitoring and cleanup functions
 
 ## Core Scripts
@@ -29,21 +30,38 @@ Creates and configures AWS EC2 instances for Ceph cluster deployment.
 
 **Usage:**
 ```bash
-# Launch 3-node cluster
+# Launch 3-node cluster (auto-detects AMI based on EC2_TYPE)
 ./ec2-create-instances.sh 3
 
 # Launch single node  
 ./ec2-create-instances.sh 1
+
+# Use x86_64 instance type (auto-selects x86_64 AMI)
+EC2_TYPE="t3.large" ./ec2-create-instances.sh 3
+
+# Use ARM64 instance type (auto-selects ARM64 AMI)
+EC2_TYPE="c8gd.large" ./ec2-create-instances.sh 3
+
+# Override with custom AMI
+AMI_IMAGE="ami-custom123" ./ec2-create-instances.sh 3
 ```
 
 **Configuration (Environment Variables):**
 - `AWS_REGION="us-west-2"` - AWS region
-- `EC2_TYPE="c8gd.large"` - Instance type (c8gd.large/c5ad.large/c7gd.medium)
-- `AMI_IMAGE="ami-03be04a3da3a40226"` - Rocky Linux 9 ARM64 AMI
+- `EC2_TYPE="i3.4xlarge"` - Instance type (i3.4xlarge/c8gd.large/c5ad.large/c7gd.medium)
+- `AMI_ARM="ami-03be04a3da3a40226"` - Rocky Linux 9 ARM64 AMI  
+- `AMI_X86="ami-0fadb4bc4d6071e9e"` - Rocky Linux 9 x86_64 AMI
+- `AMI_IMAGE` - Override AMI (auto-detected from instance type if not set)
 - `EC2_SECURITY_GROUPS="SSH-HTTP-ICMP ceph-cluster-sg"` - Security groups
-- `EBS_QTY="7"` - Number of EBS volumes per instance
+- `EBS_QTY="6"` - Number of EBS volumes per instance
 - `EBS_SIZE="125"` - Size of each EBS volume (GB)
 - `EBS_TYPE="st1"` - EBS volume type (st1/gp3/io2)
+
+**AMI Auto-Detection:**
+The script automatically selects the correct AMI based on instance type architecture:
+- ARM64 instances (c8gd.*, a1.*, etc.) → Uses `AMI_ARM`
+- x86_64 instances (t3.*, m5.*, etc.) → Uses `AMI_X86`
+- Set `AMI_IMAGE` to override auto-detection
 
 #### `bootstrap-node.sh`
 **Ceph cluster bootstrap and node management**
@@ -80,6 +98,57 @@ sudo TARGET_HOSTNAME=ceph-test-2 TARGET_INTERNAL_IP=10.0.1.100 bash bootstrap-no
 sudo TARGET_HOSTNAME=ceph-test-2 bash bootstrap-node.sh create_osds
 ```
 
+### 🖥️ Client Deployment Scripts
+
+#### `ec2-client.sh`  
+**Ceph client instance deployment**
+
+Creates and configures a dedicated EC2 instance as a Ceph client with support for multiple access protocols.
+
+**Key Features:**
+- **Multi-Protocol Support**: NFS, SMB/CIFS, CephFS, S3/RadosGW, iSCSI, NVMe-oF
+- **Instance Management**: Discovers existing client, launches if needed
+- **Automated Setup**: Hostname configuration, DNS registration
+- **Tool Installation**: Includes `scratch-dna` benchmark tool, monitoring utilities
+
+**Usage:**
+```bash
+# Deploy client instance (auto-detects AMI)
+./ec2-client.sh
+
+# Use x86_64 instance type
+EC2_TYPE="t3.medium" ./ec2-client.sh
+
+# Use ARM64 instance type  
+EC2_TYPE="a1.medium" ./ec2-client.sh
+
+# Override with custom AMI
+AMI_IMAGE="ami-custom123" ./ec2-client.sh
+```
+
+**Configuration (Environment Variables):**
+- `EC2_TYPE="c8gd.xlarge"` - Instance type (c8gd.xlarge/i3.large/a1.medium/t3a.small)
+- `AMI_ARM="ami-03be04a3da3a40226"` - Rocky Linux 9 ARM64 AMI
+- `AMI_X86="ami-0fadb4bc4d6071e9e"` - Rocky Linux 9 x86_64 AMI
+- `AMI_IMAGE` - Override AMI (auto-detected from instance type if not set)
+- `INSTANCE_NAME="ceph-client"` - Client instance name
+- `EC2_SECURITY_GROUPS="SSH-HTTP-ICMP ceph-cluster-sg ceph-client-sg"` - Security groups
+
+**AMI Auto-Detection:**
+Like the cluster script, automatically selects correct AMI based on instance architecture.
+
+#### `ec2-client-cloud-init.txt`
+**Client instance cloud-init configuration**
+
+Handles client-specific package installation and configuration during instance boot.
+
+**Installed Components:**
+- **Ceph Tools**: `ceph-common`, `ceph-fuse` for CephFS access
+- **Network Clients**: `nfs-utils`, `cifs-utils`, `s3cmd` for various protocols
+- **Block Storage**: `iscsi-initiator-utils`, `nvme-cli` for iSCSI/NVMe-oF
+- **Monitoring**: `htop`, `iotop`, `iftop`, `mc` for system monitoring
+- **Benchmarking**: `scratch-dna` tool for storage performance testing
+
 ### 🔧 Infrastructure Support Scripts
 
 #### `ec2-create-ceph-security-group.sh`
@@ -96,6 +165,27 @@ Creates and configures security groups with all necessary Ceph ports and protoco
   - MDS: 6800
   - RGW: 7480, 8080
   - SSH: 22 (from security group itself for orchestration)
+
+#### `ec2-create-ceph-client-security-group.sh`
+**AWS security group creation for Ceph clients**
+
+Creates dedicated security group for client instances with access to all Ceph protocols.
+
+**Features:**
+- Creates `ceph-client-sg` security group
+- Configures ingress rules for client protocols:
+  - **NFS**: 2049, 111 (TCP/UDP)
+  - **SMB/CIFS**: 445, 139, 137, 138
+  - **CephFS**: 3300, 6789, 6800-7300 (direct cluster access)
+  - **S3/RadosGW**: 80, 443, 7480, 7481
+  - **iSCSI**: 3260, 860-861
+  - **NVMe-oF**: 4420-4430
+
+**Usage:**
+```bash
+# Create client security group
+./ec2-create-ceph-client-security-group.sh vpc-0123456789abcdef0
+```
 
 #### `ebs-create-attach.sh`
 **EBS volume provisioning and attachment**
@@ -171,6 +261,7 @@ Cloud-init configuration for EC2 instances. Handles:
 
 ## Deployment Workflow
 
+### Cluster Deployment
 1. **Security Setup**: Run `ec2-create-ceph-security-group.sh`
 2. **Cluster Launch**: Run `ec2-create-instances.sh [num_instances]`
 3. **Automatic Process**:
@@ -180,19 +271,31 @@ Cloud-init configuration for EC2 instances. Handles:
    - Adds additional nodes to cluster
    - Creates OSDs with optimal HDD/SSD ratios
 
+### Client Deployment  
+1. **Client Security**: Run `ec2-create-ceph-client-security-group.sh`
+2. **Client Launch**: Run `ec2-client.sh`
+3. **Access Configuration**: Configure client access to cluster via desired protocols
+
 ## Architecture
 
 - **First Node**: Acts as cluster orchestrator (runs MON, MGR services)
 - **Additional Nodes**: Join cluster and provide OSD services
+- **Client Node**: Dedicated client instance with multi-protocol access
 - **Storage**: ST1 volumes for cost-effective bulk storage
 - **Network**: Private cluster communication + public management access
 
 ## Current Configuration
 
-- **Instance Type**: c8gd.large (ARM64, NVMe SSD + network-optimized)
-- **AMI**: Rocky Linux 9 ARM64 (`ami-03be04a3da3a40226`)
-- **Storage**: 7x 125GB ST1 volumes per node
-- **Ceph Version**: 19.2.2 (latest stable)
+### Cluster Nodes
+- **Instance Type**: i3.4xlarge (x86_64, NVMe SSD + network-optimized)
+- **AMI**: Auto-detected based on architecture (ARM64: `ami-03be04a3da3a40226`, x86_64: `ami-0fadb4bc4d6071e9e`)
+- **Storage**: 6x 125GB ST1 volumes per node + local NVMe
+- **Ceph Version**: 19.2.2 (Squid - latest stable)
+
+### Client Nodes  
+- **Instance Type**: c8gd.xlarge (ARM64, cost-efficient with local NVMe)
+- **AMI**: Auto-detected based on architecture
+- **Protocols**: NFS, SMB/CIFS, CephFS, S3/RadosGW, iSCSI, NVMe-oF
 
 ## Monitoring & Maintenance
 
@@ -200,6 +303,353 @@ Cloud-init configuration for EC2 instances. Handles:
 - **Device Status**: `sudo /usr/local/bin/cephadm shell -- ceph orch device ls`
 - **OSD Status**: `sudo /usr/local/bin/cephadm shell -- ceph osd tree`
 - **Clean Unused Volumes**: Run `ebs-delete-unused.sh` periodically
+
+## Client Usage Examples
+
+### CephFS Mount
+```bash
+# Direct mount using ceph-fuse
+sudo ceph-fuse /mnt/cephfs -m <mon-host>:6789 --name client.admin
+
+# Kernel client mount
+sudo mount -t ceph <mon-host>:6789:/ /mnt/cephfs -o name=admin
+```
+
+### S3/RadosGW Access
+```bash
+# Configure s3cmd
+s3cmd --configure
+
+# List buckets
+s3cmd ls
+
+# Upload file
+s3cmd put file.txt s3://mybucket/
+```
+
+### iSCSI Connection
+```bash
+# Discover targets
+sudo iscsiadm -m discovery -t st -p <gateway-ip>
+
+# Login to target
+sudo iscsiadm -m node -T <target-name> -p <gateway-ip> --login
+
+# List connected devices
+lsblk
+```
+
+### NVMe-oF Connection
+```bash
+# Connect to NVMe target
+sudo nvme connect -t tcp -a <gateway-ip> -s 4420 -n <nqn>
+
+# List NVMe devices
+sudo nvme list
+```
+
+### Performance Testing
+```bash
+# Run storage benchmark
+scratch-dna /mnt/cephfs/testfile 1G
+```
+
+## CephFS File System Setup
+
+### Overview
+CephFS provides a POSIX-compliant distributed file system built on Ceph's object storage. This setup uses a **hybrid storage approach**:
+- **Metadata Pool**: SSD-backed, replicated for high performance and reliability
+- **Data Pool**: HDD-backed, erasure coded for efficient bulk storage
+
+### Prerequisites
+- Ceph cluster with mixed SSD/HDD storage deployed
+- At least one SSD per host for metadata performance
+- Minimum 3 hosts for erasure coding (k=2, m=1)
+
+### Step 1: Create SSD Metadata Pool
+
+Create a CRUSH rule and replicated pool for CephFS metadata using SSDs:
+
+```bash
+# Create CRUSH rule for SSD devices
+ceph osd crush rule create-replicated ssd_rule default host ssd
+
+# Create metadata pool (64 PGs for small-medium clusters)
+ceph osd pool create cephfs_metadata_pool 64 64 replicated ssd_rule
+
+# Configure replication (3 copies, minimum 2)
+ceph osd pool set cephfs_metadata_pool size 3
+ceph osd pool set cephfs_metadata_pool min_size 2
+
+# Enable fast read for metadata performance
+ceph osd pool set cephfs_metadata_pool fast_read true
+```
+
+### Step 2: Create HDD Data Pool with Erasure Coding
+
+Create an erasure-coded pool for CephFS data using HDDs:
+
+```bash
+# Create erasure coding profile (k=2, m=1 = 2 data + 1 parity)
+ceph osd erasure-code-profile set ec42_profile \
+  k=2 m=1 \
+  crush-failure-domain=host \
+  crush-device-class=hdd \
+  plugin=jerasure \
+  technique=reed_sol_van
+
+# Create CRUSH rule for erasure coded data pool
+ceph osd crush rule create-erasure hdd_data_ec_rule ec42_profile
+
+# Create data pool (128 PGs for larger data storage)
+ceph osd pool create cephfs_data_pool 128 128 erasure ec42_profile
+
+# Mark as bulk storage for optimization
+ceph osd pool set cephfs_data_pool bulk true
+
+# Enable compression for space efficiency (optional)
+ceph osd pool set cephfs_data_pool compression_algorithm lz4
+ceph osd pool set cephfs_data_pool compression_mode aggressive
+```
+
+### Step 3: Create CephFS File System
+
+```bash
+# Create the file system
+ceph fs new myfs cephfs_metadata_pool cephfs_data_pool --force
+
+# Enable MDS autoscaler (recommended)
+ceph fs set myfs allow_standby_replay true
+ceph fs set myfs max_mds 2
+
+# Verify file system creation
+ceph fs status myfs
+```
+
+### Step 4: Deploy MDS Daemons
+
+```bash
+# Deploy MDS daemons (one active, one standby per filesystem)
+ceph orch apply mds myfs --placement="3"
+
+# Check MDS status
+ceph fs status
+ceph mds stat
+```
+
+### Step 5: Client Access Setup
+
+#### Prepare Client Authentication
+
+Copy Ceph configuration and credentials from the admin container to client systems:
+
+```bash
+# On Ceph cluster node - extract files from cephadm container
+sudo /usr/local/bin/cephadm shell -- cat /etc/ceph/ceph.conf > /tmp/ceph.conf
+sudo /usr/local/bin/cephadm shell -- cat /etc/ceph/ceph.client.admin.keyring > /tmp/ceph.keyring
+
+# Copy files to client system (replace CLIENT_IP with your client IP)
+scp /tmp/ceph.conf root@CLIENT_IP:/etc/ceph/
+scp /tmp/ceph.keyring root@CLIENT_IP:/etc/ceph/
+
+# Or manually copy the contents to client /etc/ceph/ directory
+```
+
+#### Extract Secret Key
+
+On the client system, extract the admin secret key:
+
+```bash
+# Create secret file from keyring
+grep key /etc/ceph/ceph.keyring | cut -d' ' -f3 > /etc/ceph/secret
+
+# Secure the secret file
+chmod 600 /etc/ceph/secret
+```
+
+#### Mount CephFS
+
+Mount the CephFS filesystem on the client:
+
+```bash
+# Create mount point
+mkdir -p /mnt/cephfs
+
+# Mount using kernel client (replace IPs with your MON addresses)
+mount -t ceph 172.31.14.115,172.31.14.115,172.31.14.221,172.31.0.107:/ /mnt/cephfs \
+  -o name=admin,secretfile=/etc/ceph/secret,mds_namespace=myfs
+
+# Verify mount
+df -h /mnt/cephfs
+ls -la /mnt/cephfs
+```
+
+#### Alternative: ceph-fuse Mount
+
+For environments where kernel client isn't available:
+
+```bash
+# Install ceph-fuse (already included in client cloud-init)
+# sudo dnf install ceph-fuse
+
+# Mount using FUSE
+ceph-fuse /mnt/cephfs -m 172.31.14.115,172.31.14.115,172.31.14.221,172.31.0.107 \
+  --name admin --keyring /etc/ceph/ceph.keyring \
+  --client-fs myfs
+
+# Verify mount
+df -h /mnt/cephfs
+```
+
+#### Persistent Mounting
+
+Add to `/etc/fstab` for automatic mounting:
+
+```bash
+# Kernel client mount in /etc/fstab
+echo "172.31.14.115,172.31.14.115,172.31.14.221,172.31.0.107:/ /mnt/cephfs ceph name=admin,secretfile=/etc/ceph/secret,mds_namespace=myfs,_netdev 0 0" >> /etc/fstab
+
+# Test fstab entry
+umount /mnt/cephfs
+mount -a
+```
+
+#### Client Configuration Options
+
+Common mount options for performance and reliability:
+
+```bash
+# Performance-optimized mount
+mount -t ceph MON_IPS:/ /mnt/cephfs \
+  -o name=admin,secretfile=/etc/ceph/secret,mds_namespace=myfs,\
+cache=strict,fsc,rsize=16777216,wsize=16777216
+
+# High availability mount with multiple MONs
+mount -t ceph 172.31.14.115:6789,172.31.14.221:6789,172.31.0.107:6789:/ /mnt/cephfs \
+  -o name=admin,secretfile=/etc/ceph/secret,mds_namespace=myfs,\
+recover_session=clean,_netdev
+```
+
+#### Mount Options Explained
+
+- **`name=admin`**: Ceph client user name
+- **`secretfile=/etc/ceph/secret`**: Path to secret key file
+- **`mds_namespace=myfs`**: CephFS filesystem name
+- **`cache=strict`**: Enable client-side caching
+- **`fsc`**: Enable local file caching
+- **`rsize/wsize=16777216`**: 16MB read/write buffer sizes
+- **`recover_session=clean`**: Handle MDS failures gracefully
+- **`_netdev`**: Wait for network before mounting (fstab)
+
+#### Troubleshooting Client Mounts
+
+```bash
+# Check client connection status
+ceph tell mds.myfs.hostname client ls
+
+# View client performance
+ceph daemon mds.myfs.hostname perf dump | grep client
+
+# Debug mount issues
+dmesg | grep ceph
+journalctl -u ceph-fuse
+
+# Test connectivity to MONs
+telnet 172.31.14.115 6789
+```
+
+### Pool Configuration Details
+
+#### Metadata Pool (SSD)
+- **Type**: Replicated (3 copies)
+- **Device Class**: SSD
+- **PG Count**: 64 (adjust based on cluster size)
+- **Use Case**: File/directory metadata, small files
+- **Performance**: High IOPS, low latency
+
+#### Data Pool (HDD) 
+- **Type**: Erasure Coded (k=2, m=1)
+- **Device Class**: HDD  
+- **PG Count**: 128 (adjust based on data size)
+- **Use Case**: Large file data blocks
+- **Efficiency**: 50% overhead (vs 200% for replication)
+
+### Erasure Code Profile Options
+
+```bash
+# View available profiles
+ceph osd erasure-code-profile ls
+
+# Create different profiles for various redundancy levels:
+
+# k=4, m=2 (higher efficiency, requires 6+ hosts)
+ceph osd erasure-code-profile set ec64_profile k=4 m=2 crush-failure-domain=host crush-device-class=hdd
+
+# k=3, m=2 (balanced, requires 5+ hosts)  
+ceph osd erasure-code-profile set ec53_profile k=3 m=2 crush-failure-domain=host crush-device-class=hdd
+```
+
+### Performance Tuning
+
+```bash
+# Optimize MDS cache size (per MDS daemon)
+ceph config set mds mds_cache_memory_limit 4294967296  # 4GB
+
+# Optimize client cache
+ceph config set client client_cache_size 134217728     # 128MB
+
+# Enable async I/O for better performance
+ceph config set client client_oc_size 104857600       # 100MB
+```
+
+### Monitoring CephFS
+
+```bash
+# File system status
+ceph fs status myfs
+
+# MDS performance metrics
+ceph daemon mds.myfs.hostname perf dump
+
+# Pool usage
+ceph df detail
+
+# Client connections
+ceph tell mds.myfs.hostname client ls
+```
+
+### Backup and Snapshots
+
+```bash
+# Enable snapshots on CephFS
+ceph fs set myfs allow_new_snaps true
+
+# Create directory snapshots (from mounted client)
+mkdir /mnt/cephfs/mydir/.snap/snapshot_name
+
+# List snapshots
+ls /mnt/cephfs/mydir/.snap/
+```
+
+### Troubleshooting CephFS
+
+#### Common Issues
+- **Slow metadata operations**: Check MDS cache settings and SSD performance
+- **Unbalanced data**: Verify CRUSH rules and device classes
+- **MDS failures**: Check MDS logs and standby daemon availability
+
+#### Debug Commands
+```bash
+# Check MDS health
+ceph health detail | grep -i mds
+
+# View MDS logs
+ceph log last 50 | grep -i mds
+
+# Verify pool CRUSH rules
+ceph osd pool get cephfs_metadata_pool crush_rule
+ceph osd pool get cephfs_data_pool crush_rule
+```
 
 ## Troubleshooting
 

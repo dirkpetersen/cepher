@@ -9,14 +9,42 @@
 
 # Configuration Variables
 : "${AWS_REGION:="us-west-2"}"
-: "${EC2_TYPE:="a1.medium"}"    # arm a1.medium x86:t3a.small x86 with disk: c6id.large
-: "${AMI_IMAGE:="ami-03be04a3da3a40226"}"  # x86: ami-0fadb4bc4d6071e9e, arm: ami-03be04a3da3a40226
+: "${EC2_TYPE:="c6a.xlarge"}"    # arm a1.medium, c8gd.xlarge x86:t3a.small x86 with disk: c6id.large, i3.large
+: "${AMI_ARM:="ami-03be04a3da3a40226"}"  # Rocky Linux 9 ARM64
+: "${AMI_X86:="ami-0fadb4bc4d6071e9e"}"  # Rocky Linux 9 x86_64
 : "${ROOT_VOLUME_SIZE:="20"}"
 : "${INSTANCE_NAME:="ceph-client"}" 
 : "${DOMAIN:="ai.oregonstate.edu"}"
 : "${CLOUD_INIT_FILE:="ec2-client-cloud-init.txt"}"
 : "${EC2_USER:="rocky"}"
 : "${EC2_SECURITY_GROUPS:="SSH-HTTP-ICMP ceph-cluster-sg ceph-client-sg"}"
+
+# Auto-detect AMI based on instance type architecture if AMI_IMAGE not explicitly set
+if [[ -z "${AMI_IMAGE:-}" ]]; then
+    # Get instance type architecture from AWS
+    INSTANCE_ARCH=$(aws ec2 describe-instance-types \
+        --instance-types "${EC2_TYPE}" \
+        --region "${AWS_REGION}" \
+        --query 'InstanceTypes[0].ProcessorInfo.SupportedArchitectures[0]' \
+        --output text 2>/dev/null)
+    
+    case "${INSTANCE_ARCH}" in
+        "arm64")
+            AMI_IMAGE="${AMI_ARM}"
+            echo "Detected ARM64 architecture for ${EC2_TYPE}, using AMI: ${AMI_IMAGE}"
+            ;;
+        "x86_64")
+            AMI_IMAGE="${AMI_X86}"
+            echo "Detected x86_64 architecture for ${EC2_TYPE}, using AMI: ${AMI_IMAGE}"
+            ;;
+        *)
+            echo "Warning: Could not detect architecture for ${EC2_TYPE}, defaulting to ARM64"
+            AMI_IMAGE="${AMI_ARM}"
+            ;;
+    esac
+else
+    echo "Using explicitly set AMI_IMAGE: ${AMI_IMAGE}"
+fi
 
 FQDN="${INSTANCE_NAME}.${DOMAIN}"
 

@@ -6,6 +6,11 @@ CEPH_RELEASE=19.2.2  # replace this with the active release
 # Configuration: Number of HDDs that should share one SSD for DB
 : "${HDDS_PER_SSD:=2}"
 
+# Global arrays to store available devices by type
+declare -a HDD_DEVICES=()
+declare -a SSD_DEVICES=()
+declare -A SSD_SIZES  # Associative array to store SSD sizes by device path
+
 # Accept mode as first argument: 'first', 'others', or 'join_cluster'
 MODE="$1"
 
@@ -133,14 +138,33 @@ wait_for_podman() {
 configure_udev_rules() {
     echo "Configuring udev rules for AWS EBS volumes..."
     cat > /etc/udev/rules.d/99-aws-ebs.rules << 'EOF'
-# Add this content (targets ONLY "Amazon Elastic Block Store"):
+# AWS EBS volumes - newer systems with explicit model name
 SUBSYSTEM=="block", KERNEL=="nvme*", ENV{ID_MODEL}=="Amazon Elastic Block Store", ENV{DEVTYPE}=="disk", ATTR{queue/rotational}="1"
+
+# AWS EBS volumes - older systems with empty model string (xvd* devices)
+SUBSYSTEM=="block", KERNEL=="xvd*", ENV{ID_MODEL}=="", ENV{DEVTYPE}=="disk", ATTR{queue/rotational}="1"
+
+# AWS EBS volumes - NVMe devices with empty model (some configurations)
+SUBSYSTEM=="block", KERNEL=="nvme*", ENV{ID_MODEL}=="", ENV{DEVTYPE}=="disk", ATTR{queue/rotational}="1"
 EOF
 
     # Reload udev rules
     echo "Reloading udev rules..."
     udevadm control --reload-rules
     udevadm trigger
+    
+    # Apply rotational setting to existing devices immediately
+    echo "Applying rotational settings to existing EBS volumes..."
+    for device in /sys/block/*/queue/rotational; do
+        if [[ -f "$device" ]]; then
+            device_name=$(echo "$device" | cut -d'/' -f4)
+            # Check if it's an EBS volume (xvd* or nvme* without "Instance Storage" in model)
+            if [[ "$device_name" =~ ^xvd ]] || [[ "$device_name" =~ ^nvme ]] && ! lsblk -no MODEL "/dev/$device_name" 2>/dev/null | grep -q "Instance Storage"; then
+                echo 1 > "$device" 2>/dev/null || true
+                echo "Set rotational=1 for $device_name"
+            fi
+        fi
+    done
 }
 
 # Source remote file copy functions
@@ -539,8 +563,14 @@ try:
                             rotational = device.get('rotational', True)
                         else:
                             rotational = True  # Default to HDD if unknown
+                        
+                        # Get device size from sys_api if available
+                        size_bytes = 0
+                        if 'sys_api' in device and 'size' in device['sys_api']:
+                            size_bytes = device['sys_api'].get('size', 0)
+                        
                         if path:
-                            print(f'{path}:{rotational}')
+                            print(f'{path}:{rotational}:{size_bytes}')
             # If it's a direct list of devices
             elif isinstance(host_data, dict) and 'path' in host_data:
                 if host_data.get('available', False) and not host_data.get('rejected_reasons', []):
@@ -554,8 +584,14 @@ try:
                         rotational = host_data.get('rotational', True)
                     else:
                         rotational = True  # Default to HDD if unknown
+                    
+                    # Get device size from sys_api if available
+                    size_bytes = 0
+                    if 'sys_api' in host_data and 'size' in host_data['sys_api']:
+                        size_bytes = host_data['sys_api'].get('size', 0)
+                    
                     if path:
-                        print(f'{path}:{rotational}')
+                        print(f'{path}:{rotational}:{size_bytes}')
 except Exception as e:
     print(f'Error parsing device list: {e}', file=sys.stderr)
 ")
@@ -565,17 +601,22 @@ except Exception as e:
                 local temp_ssd_count=0
                 local temp_hdd_count=0
                 
-                while IFS=':' read -r device rotational; do
+                while IFS=':' read -r device rotational size_bytes; do
                     if [[ -n "${device}" ]]; then
-                        echo "DEBUG: Device ${device} -> rotational=${rotational}"
+                        echo "DEBUG: Device ${device} -> rotational=${rotational}, size=${size_bytes} bytes"
                         if [[ "${rotational}" == "False" ]]; then
                             SSD_DEVICES+=("${device}")
+                            SSD_SIZES["${device}"]="${size_bytes}"
                             temp_ssd_count=$((temp_ssd_count + 1))
-                            echo "Found available SSD: ${device}"
+                            # Convert bytes to GB for display
+                            local size_gb=$((size_bytes / 1024 / 1024 / 1024))
+                            echo "Found available SSD: ${device} (${size_gb} GB)"
                         else
                             HDD_DEVICES+=("${device}") 
                             temp_hdd_count=$((temp_hdd_count + 1))
-                            echo "Found available HDD: ${device}"
+                            # Convert bytes to GB for display
+                            local size_gb=$((size_bytes / 1024 / 1024 / 1024))
+                            echo "Found available HDD: ${device} (${size_gb} GB)"
                         fi
                     fi
                 done <<< "${available_devices}"
@@ -836,11 +877,35 @@ create_osds_with_shared_db() {
         
         if [[ -n "${data_devices_list}" ]]; then
             local ssd_device="${SSD_DEVICES[$ssd_index]}"
+            
+            # Calculate block_db_size: 80% of SSD size divided by number of HDDs using this SSD
+            local ssd_size_bytes="${SSD_SIZES[$ssd_device]}"
+            local block_db_size_gb=0
+            
+            if [[ -n "${ssd_size_bytes}" && "${ssd_size_bytes}" -gt 0 ]]; then
+                # Calculate 80% of SSD size, divide by number of OSDs sharing it, convert to GB, round down
+                local usable_ssd_bytes=$((ssd_size_bytes * 80 / 100))
+                local db_size_per_osd_bytes=$((usable_ssd_bytes / hdds_for_this_ssd))
+                block_db_size_gb=$((db_size_per_osd_bytes / 1024 / 1024 / 1024))
+                
+                echo "SSD ${ssd_device}: ${ssd_size_bytes} bytes -> 80% = ${usable_ssd_bytes} bytes"
+                echo "Shared among ${hdds_for_this_ssd} OSDs -> ${block_db_size_gb} GB per OSD block_db"
+            else
+                echo "Warning: Could not determine size for SSD ${ssd_device}, using default block_db size"
+            fi
+            
             echo "Creating $hdds_for_this_ssd OSDs with data on [$data_devices_list], DB on $ssd_device..."
             
-            echo "DEBUG: Executing ceph orch command: daemon add osd $HOSTNAME:data_devices=$data_devices_list,db_devices=$ssd_device,osds_per_device=1"
+            # Build the command with block_db_size if calculated
+            local osd_spec="$HOSTNAME:data_devices=$data_devices_list,db_devices=$ssd_device,osds_per_device=1"
+            if [[ ${block_db_size_gb} -gt 0 ]]; then
+                osd_spec="${osd_spec},block_db_size=${block_db_size_gb}G"
+                echo "DEBUG: Using block_db_size=${block_db_size_gb}G"
+            fi
+            
+            echo "DEBUG: Executing ceph orch command: daemon add osd $osd_spec"
             /usr/local/bin/cephadm shell --fsid "${FSID}" -c /etc/ceph/ceph.conf -k /etc/ceph/ceph.client.admin.keyring -- \
-              ceph orch daemon add osd "$HOSTNAME:data_devices=$data_devices_list,db_devices=$ssd_device,osds_per_device=1"
+              ceph orch daemon add osd "$osd_spec"
             
             if [[ $? -ne 0 ]]; then
                 echo "Warning: Failed to create OSDs with data devices [$data_devices_list] and DB on $ssd_device"
