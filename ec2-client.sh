@@ -38,8 +38,8 @@ if [[ -z "${AMI_IMAGE:-}" ]]; then
             echo "Detected x86_64 architecture for ${EC2_TYPE}, using AMI: ${AMI_IMAGE}"
             ;;
         *)
-            echo "Warning: Could not detect architecture for ${EC2_TYPE}, defaulting to ARM64"
-            AMI_IMAGE="${AMI_ARM}"
+            echo "Warning: Could not detect architecture for ${EC2_TYPE}, defaulting to x86_64"
+            AMI_IMAGE="${AMI_X86}"
             ;;
     esac
 else

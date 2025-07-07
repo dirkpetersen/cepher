@@ -57,19 +57,19 @@ if [[ ! "$NUM_INSTANCES" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # Configuration Variables
+: "${INSTANCE_NAME:="ceph-test"}"
 : "${AWS_REGION:="us-west-2"}"
 : "${EC2_TYPE:="i3.4xlarge"}"  # c5ad.large / c8gd.medium / i3.large // 2 x ssd: i3.4xlarge, m5d.4xlarge, c8gd.12xlarge, c7gd.12xlarge
 : "${AMI_ARM:="ami-03be04a3da3a40226"}"  # Rocky Linux 9 ARM64
 : "${AMI_X86:="ami-0fadb4bc4d6071e9e"}"  # Rocky Linux 9 x86_64
 : "${ROOT_VOLUME_SIZE:="32"}"
-: "${INSTANCE_NAME:="ceph-test"}"
 : "${DOMAIN:="ai.oregonstate.edu"}"
 : "${CLOUD_INIT_FILE:="ec2-cloud-init.txt"}"
 : "${EC2_USER:="rocky"}"
 : "${EC2_SECURITY_GROUPS:="SSH-HTTP-ICMP ceph-cluster-sg"}"
-: "${EBS_TYPE:="st1"}"
-: "${EBS_SIZE:="125"}"
-: "${EBS_QTY:="6"}" #: "normally 6"
+: "${EBS_TYPE:="st1"}" # st1 is platter based, or use  "gp3" "gp2" "st1" "sc1" "io1" "io2" "standard"
+: "${EBS_SIZE:="125"}" # smallest allowed for st1 is 125GB
+: "${EBS_QTY:="6"}" # "normally 6"
 
 # Auto-detect AMI based on instance type architecture if AMI_IMAGE not explicitly set
 if [[ -z "${AMI_IMAGE:-}" ]]; then
@@ -90,8 +90,8 @@ if [[ -z "${AMI_IMAGE:-}" ]]; then
             echo "Detected x86_64 architecture for ${EC2_TYPE}, using AMI: ${AMI_IMAGE}"
             ;;
         *)
-            echo "Warning: Could not detect architecture for ${EC2_TYPE}, defaulting to ARM64"
-            AMI_IMAGE="${AMI_ARM}"
+            echo "Warning: Could not detect architecture for ${EC2_TYPE}, defaulting to x86_64"
+            AMI_IMAGE="${AMI_X86}"
             ;;
     esac
 else

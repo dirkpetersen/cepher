@@ -12,6 +12,221 @@ The toolkit provides end-to-end automation for:
 - Ceph client deployment with multi-protocol support
 - Lambda-based monitoring and cleanup functions
 
+## AWS IAM Permissions Required
+
+### Minimum Required Permissions
+
+The toolkit requires the following AWS IAM permissions to deploy and manage Ceph clusters:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "EC2InstanceManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeInstances",
+                "ec2:DescribeInstanceTypes",
+                "ec2:DescribeImages",
+                "ec2:RunInstances",
+                "ec2:TerminateInstances",
+                "ec2:CreateTags",
+                "ec2:DescribeTags",
+                "ec2:ModifyInstanceAttribute"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "EBSVolumeManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:CreateVolume",
+                "ec2:DeleteVolume",
+                "ec2:AttachVolume",
+                "ec2:DetachVolume",
+                "ec2:DescribeVolumes",
+                "ec2:ModifyVolume"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "SecurityGroupManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:CreateSecurityGroup",
+                "ec2:DeleteSecurityGroup",
+                "ec2:DescribeSecurityGroups",
+                "ec2:AuthorizeSecurityGroupIngress",
+                "ec2:AuthorizeSecurityGroupEgress",
+                "ec2:RevokeSecurityGroupIngress",
+                "ec2:RevokeSecurityGroupEgress"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "NetworkingAndKeyPairs",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeVpcs",
+                "ec2:DescribeSubnets",
+                "ec2:DescribeKeyPairs",
+                "ec2:CreateKeyPair",
+                "ec2:DeleteKeyPair",
+                "ec2:ImportKeyPair",
+                "ec2:DescribeAvailabilityZones"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Route53DNSManagement",
+            "Effect": "Allow",
+            "Action": [
+                "route53:ListHostedZones",
+                "route53:ChangeResourceRecordSets",
+                "route53:GetChange"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "IAMAndSTSAccess",
+            "Effect": "Allow",
+            "Action": [
+                "sts:GetCallerIdentity",
+                "iam:GetUser",
+                "iam:ListAccessKeys"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+### Optional Lambda Permissions
+
+For Lambda-based monitoring and cleanup functions:
+
+```json
+{
+    "Sid": "LambdaManagement",
+    "Effect": "Allow",
+    "Action": [
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:InvokeFunction",
+        "lambda:ListFunctions",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PassRole",
+        "events:PutRule",
+        "events:DeleteRule",
+        "events:PutTargets",
+        "events:RemoveTargets"
+    ],
+    "Resource": "*"
+}
+```
+
+### AWS CLI Authentication Setup
+
+#### Option 1: AWS SSO (Recommended)
+
+```bash
+# Configure AWS SSO
+aws configure sso
+
+# Login when needed (scripts will prompt automatically)
+aws sso login --no-browser
+```
+
+#### Option 2: IAM User with Access Keys
+
+```bash
+# Configure with access keys
+aws configure
+
+# Or set environment variables
+export AWS_ACCESS_KEY_ID="your-access-key"
+export AWS_SECRET_ACCESS_KEY="your-secret-key"
+export AWS_DEFAULT_REGION="us-west-2"
+```
+
+#### Option 3: IAM Instance Profile
+
+For running on EC2 instances, attach an IAM role with the above permissions.
+
+### IAM Policy Creation Example
+
+Create a custom IAM policy for the toolkit:
+
+```bash
+# Create policy file
+cat > ceph-toolkit-policy.json << 'EOF'
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        # ... (paste the permissions JSON above)
+    ]
+}
+EOF
+
+# Create IAM policy
+aws iam create-policy \
+    --policy-name CephToolkitPolicy \
+    --policy-document file://ceph-toolkit-policy.json
+
+# Attach to user
+aws iam attach-user-policy \
+    --user-name your-username \
+    --policy-arn arn:aws:iam::YOUR-ACCOUNT:policy/CephToolkitPolicy
+```
+
+### Permission Verification
+
+Test your AWS permissions before deployment:
+
+```bash
+# Test basic EC2 access
+aws ec2 describe-instances --max-items 1
+
+# Test instance type query (for AMI auto-detection)
+aws ec2 describe-instance-types --instance-types t3.medium
+
+# Test security group access
+aws ec2 describe-security-groups --max-items 1
+
+# Test EBS access
+aws ec2 describe-volumes --max-items 1
+
+# Test Route53 access (optional)
+aws route53 list-hosted-zones
+```
+
+### EC2 SSH Key pair creation 
+
+Cepther will expect a SSH key with this naming convention:  `/.ssh/auto-ec2-<AWS_ACCOUNT_NO>-<IAM_USER>.pem`
+The easist way to create such a key is to use the 'ec2' helper script: 
+
+```
+mkdir ~/bin && cd  ~/bin 
+wget https://raw.githubusercontent.com/dirkpetersen/dptests/refs/heads/main/ec2
+wget https://raw.githubusercontent.com/dirkpetersen/dptests/refs/heads/main/ec2-cloud-init.txt
+chmod +x ec2 
+ec2 list
+```
+
+### Security Best Practices
+
+- **Principle of Least Privilege**: Only grant minimum required permissions
+- **Use IAM Roles**: Prefer IAM roles over access keys when possible
+- **Temporary Credentials**: Use AWS SSO or assume-role for temporary access
+- **Resource Constraints**: Add resource-level constraints where appropriate
+- **Regular Audits**: Review and rotate credentials regularly
+
 ## Core Scripts
 
 ### 🚀 Main Deployment Scripts
@@ -31,22 +246,23 @@ Creates and configures AWS EC2 instances for Ceph cluster deployment.
 **Usage:**
 ```bash
 # Launch 3-node cluster (auto-detects AMI based on EC2_TYPE)
-./ec2-create-instances.sh 3
+INSTANCE_NAME=ceph-cluster ./ec2-create-instances.sh 3
 
 # Launch single node  
-./ec2-create-instances.sh 1
+INSTANCE_NAME=ceph-cluster ./ec2-create-instances.sh 1
 
 # Use x86_64 instance type (auto-selects x86_64 AMI)
-EC2_TYPE="t3.large" ./ec2-create-instances.sh 3
+INSTANCE_NAME=ceph-cluster EC2_TYPE="t3.large" ./ec2-create-instances.sh 3
 
 # Use ARM64 instance type (auto-selects ARM64 AMI)
-EC2_TYPE="c8gd.large" ./ec2-create-instances.sh 3
+INSTANCE_NAME=ceph-cluster EC2_TYPE="c8gd.large" ./ec2-create-instances.sh 3
 
 # Override with custom AMI
-AMI_IMAGE="ami-custom123" ./ec2-create-instances.sh 3
+INSTANCE_NAME=ceph-cluster AMI_IMAGE="ami-custom123" ./ec2-create-instances.sh 3
 ```
 
 **Configuration (Environment Variables):**
+- `INSTANCE_NAME=ceph-test` - Cluster name 
 - `AWS_REGION="us-west-2"` - AWS region
 - `EC2_TYPE="i3.4xlarge"` - Instance type (i3.4xlarge/c8gd.large/c5ad.large/c7gd.medium)
 - `AMI_ARM="ami-03be04a3da3a40226"` - Rocky Linux 9 ARM64 AMI  
@@ -82,6 +298,8 @@ Handles Ceph cluster initialization and node integration with intelligent device
 - **Comprehensive Status Reporting**: Detailed device analysis and error messages
 - **HDD/SSD Optimization**: Configurable ratios for shared DB/WAL on SSDs
 - **Cluster Integration**: Waits for proper orchestrator connectivity
+
+NOTE: `bootstrap-node.sh`  will normally be called by ec2-create-instances.sh or a similar script 
 
 **Usage:**
 ```bash
@@ -127,11 +345,11 @@ AMI_IMAGE="ami-custom123" ./ec2-client.sh
 ```
 
 **Configuration (Environment Variables):**
+- `INSTANCE_NAME="ceph-client"` - Client instance name
 - `EC2_TYPE="c8gd.xlarge"` - Instance type (c8gd.xlarge/i3.large/a1.medium/t3a.small)
 - `AMI_ARM="ami-03be04a3da3a40226"` - Rocky Linux 9 ARM64 AMI
 - `AMI_X86="ami-0fadb4bc4d6071e9e"` - Rocky Linux 9 x86_64 AMI
 - `AMI_IMAGE` - Override AMI (auto-detected from instance type if not set)
-- `INSTANCE_NAME="ceph-client"` - Client instance name
 - `EC2_SECURITY_GROUPS="SSH-HTTP-ICMP ceph-cluster-sg ceph-client-sg"` - Security groups
 
 **AMI Auto-Detection:**
@@ -390,9 +608,9 @@ ceph osd pool set cephfs_metadata_pool fast_read true
 Create an erasure-coded pool for CephFS data using HDDs:
 
 ```bash
-# Create erasure coding profile (k=2, m=1 = 2 data + 1 parity)
+# Create erasure coding profile (k=2, m=2 = 2 data + 2 parity)
 ceph osd erasure-code-profile set ec42_profile \
-  k=2 m=1 \
+  k=2 m=2 \
   crush-failure-domain=host \
   crush-device-class=hdd \
   plugin=jerasure \
