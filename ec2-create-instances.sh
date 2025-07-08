@@ -71,7 +71,6 @@ fi
 : "${EBS_SIZE:="125"}" # smallest allowed for st1 is 125GB
 : "${EBS_QTY:="3"}" # "normally 6"
 : "${HDDS_PER_SSD:="3"}" # "number of HDDs that use one SSD, normally 6"
-: "${EXTRA_SYSYEMS:="2"}" # "Number of extra systems without EBS volumes"
 
 # Auto-detect AMI based on instance type architecture if AMI_IMAGE not explicitly set
 if [[ -z "${AMI_IMAGE:-}" ]]; then
