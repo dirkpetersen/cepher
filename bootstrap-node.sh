@@ -609,13 +609,15 @@ except Exception as e:
                             SSD_SIZES["${device}"]="${size_bytes}"
                             temp_ssd_count=$((temp_ssd_count + 1))
                             # Convert bytes to GB for display
-                            local size_gb=$((size_bytes / 1024 / 1024 / 1024))
+                            local size_gb=$(printf "%.0f" "${size_bytes}")
+                            size_gb=$((size_gb / 1024 / 1024 / 1024))
                             echo "Found available SSD: ${device} (${size_gb} GB)"
                         else
                             HDD_DEVICES+=("${device}") 
                             temp_hdd_count=$((temp_hdd_count + 1))
                             # Convert bytes to GB for display
-                            local size_gb=$((size_bytes / 1024 / 1024 / 1024))
+                            local size_gb=$(printf "%.0f" "${size_bytes}")
+                            size_gb=$((size_gb / 1024 / 1024 / 1024))
                             echo "Found available HDD: ${device} (${size_gb} GB)"
                         fi
                     fi
