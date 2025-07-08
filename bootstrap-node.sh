@@ -884,9 +884,10 @@ create_osds_with_shared_db() {
             local ssd_size_bytes="${SSD_SIZES[$ssd_device]}"
             local block_db_size_gb=0
             
-            if [[ -n "${ssd_size_bytes}" && "${ssd_size_bytes}" -gt 0 ]]; then
+            if [[ -n "${ssd_size_bytes}" ]] && (( $(printf "%.0f" "${ssd_size_bytes}") > 0 )); then
                 # Calculate 80% of SSD size, divide by number of OSDs sharing it, convert to GB, round down
-                local usable_ssd_bytes=$((ssd_size_bytes * 80 / 100))
+                local ssd_size_int=$(printf "%.0f" "${ssd_size_bytes}")
+                local usable_ssd_bytes=$((ssd_size_int * 80 / 100))
                 local db_size_per_osd_bytes=$((usable_ssd_bytes / hdds_for_this_ssd))
                 block_db_size_gb=$((db_size_per_osd_bytes / 1024 / 1024 / 1024))
                 
