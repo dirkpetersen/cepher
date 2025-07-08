@@ -59,7 +59,7 @@ fi
 # Configuration Variables
 : "${INSTANCE_NAME:="ceph-test"}"
 : "${AWS_REGION:="us-west-2"}"
-: "${EC2_TYPE:="i3.4xlarge"}"  # c5ad.large / c8gd.medium / i3.large // 2 x ssd: i3.4xlarge, m5d.4xlarge, c8gd.12xlarge, c7gd.12xlarge
+: "${EC2_TYPE:="c8gd.medium"}"  # c8gd.medium ($ 0.048), c5ad.large ($ 0.086) / i3.large ($0.156) // 2 x ssd: m5d.4xlarge ($0.904), i3.4xlarge ($1.984) , c8gd.12xlarge ($2.351), c7gd.12xlarge ($2.177)
 : "${AMI_ARM:="ami-03be04a3da3a40226"}"  # Rocky Linux 9 ARM64
 : "${AMI_X86:="ami-0fadb4bc4d6071e9e"}"  # Rocky Linux 9 x86_64
 : "${ROOT_VOLUME_SIZE:="32"}"
@@ -69,7 +69,9 @@ fi
 : "${EC2_SECURITY_GROUPS:="SSH-HTTP-ICMP ceph-cluster-sg"}"
 : "${EBS_TYPE:="st1"}" # st1 is platter based, or use  "gp3" "gp2" "st1" "sc1" "io1" "io2" "standard"
 : "${EBS_SIZE:="125"}" # smallest allowed for st1 is 125GB
-: "${EBS_QTY:="6"}" # "normally 6"
+: "${EBS_QTY:="3"}" # "normally 6"
+: "${HDDS_PER_SSD:="3"}" # "number of HDDs that use one SSD, normally 6"
+: "${EXTRA_SYSYEMS:="2"}" # "Number of extra systems without EBS volumes"
 
 # Auto-detect AMI based on instance type architecture if AMI_IMAGE not explicitly set
 if [[ -z "${AMI_IMAGE:-}" ]]; then
