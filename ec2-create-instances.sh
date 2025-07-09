@@ -105,9 +105,16 @@ function discover_or_launch_instances() {
     local indices_to_create=() # 0-based indices of instances to create
 
     for i in $(seq 0 $((NUM_INSTANCES - 1))); do
-        local host_num=$((i + 1))
-        local fqdn="${INSTANCE_NAME}-${host_num}.${DOMAIN}"
-        local tag_name="${INSTANCE_NAME}-${host_num}"
+        if [[ $i -eq 0 ]]; then
+            # First instance is the admin node (no suffix)
+            local fqdn="${INSTANCE_NAME}.${DOMAIN}"
+            local tag_name="${INSTANCE_NAME}"
+        else
+            # Subsequent instances are storage nodes with numbered suffix
+            local storage_node_num=$i
+            local fqdn="${INSTANCE_NAME}-${storage_node_num}.${DOMAIN}"
+            local tag_name="${INSTANCE_NAME}-${storage_node_num}"
+        fi
         TARGET_FQDNS[$i]="${fqdn}"
 
         echo "Checking for existing instance: ${tag_name} (${fqdn})..."
@@ -290,7 +297,15 @@ function discover_or_launch_instances() {
             local target_array_index=${indices_to_create[$j]}
             local new_instance_id=${launched_instance_ids_from_aws[$j]}
             TARGET_INSTANCE_IDS[$target_array_index]=$new_instance_id
-            local tag_name="${INSTANCE_NAME}-$((target_array_index + 1))"
+            
+            if [[ $target_array_index -eq 0 ]]; then
+                # Admin node (no suffix)
+                local tag_name="${INSTANCE_NAME}"
+            else
+                # Storage node with numbered suffix
+                local tag_name="${INSTANCE_NAME}-${target_array_index}"
+            fi
+            
             aws ec2 create-tags --resources ${new_instance_id} --tags "Key=Name,Value=${tag_name}"
             echo "Launched new instance ${tag_name} (ID: ${new_instance_id}). It will be fully configured."
         done
@@ -301,12 +316,16 @@ function discover_or_launch_instances() {
 }
 
 function add_disks() {
-    echo "Adding disks to newly created instances..."
+    echo "Adding disks to newly created storage instances (skipping admin node)..."
     for i in $(seq 0 $((NUM_INSTANCES - 1))); do
         if [[ "${IS_INSTANCE_NEW[$i]}" == true ]]; then
-            local instance_id=${TARGET_INSTANCE_IDS[$i]}
-            echo "Adding ${EBS_QTY} ${EBS_TYPE} volumes (${EBS_SIZE}GB) to new instance ${TARGET_FQDNS[$i]} (ID: ${instance_id})"
-            ./ebs-create-attach.sh "${instance_id}" "${EBS_TYPE}" "${EBS_SIZE}" "${EBS_QTY}"
+            if [[ $i -eq 0 ]]; then
+                echo "Skipping disk attachment for admin node ${TARGET_FQDNS[$i]} (no storage required)"
+            else
+                local instance_id=${TARGET_INSTANCE_IDS[$i]}
+                echo "Adding ${EBS_QTY} ${EBS_TYPE} volumes (${EBS_SIZE}GB) to new storage instance ${TARGET_FQDNS[$i]} (ID: ${instance_id})"
+                ./ebs-create-attach.sh "${instance_id}" "${EBS_TYPE}" "${EBS_SIZE}" "${EBS_QTY}"
+            fi
         fi
     done
 }
@@ -497,52 +516,52 @@ function bootstrap_nodes() {
     
     echo "Bootstrapping ${NUM_INSTANCES} nodes with bootstrap-node.sh..."
     
-    # Bootstrap the first node (index 0) as the MON node
-    local first_node_index=0
-    local first_node_public_ip="${TARGET_PUBLIC_IPS[$first_node_index]}"
-    local first_node_fqdn="${TARGET_FQDNS[$first_node_index]}"
-    local first_node_internal_ip="${TARGET_INTERNAL_IPS[$first_node_index]}"
+    # Bootstrap the admin node (index 0) as the MON node (no OSDs)
+    local admin_node_index=0
+    local admin_node_public_ip="${TARGET_PUBLIC_IPS[$admin_node_index]}"
+    local admin_node_fqdn="${TARGET_FQDNS[$admin_node_index]}"
+    local admin_node_internal_ip="${TARGET_INTERNAL_IPS[$admin_node_index]}"
     
-    if [[ -z "${first_node_public_ip}" || "${first_node_public_ip}" == "null" ]]; then
-        echo "Error: First node ${first_node_fqdn} has no public IP. Cannot proceed."
+    if [[ -z "${admin_node_public_ip}" || "${admin_node_public_ip}" == "null" ]]; then
+        echo "Error: Admin node ${admin_node_fqdn} has no public IP. Cannot proceed."
         return 1
     fi
     
-    echo "=== Bootstrapping first node: ${first_node_fqdn} ==="
+    echo "=== Bootstrapping admin node: ${admin_node_fqdn} ==="
     
-    # Copy bootstrap script and remote file copy script to the first node
+    # Copy bootstrap script and remote file copy script to the admin node
     if ! scp -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        ./bootstrap-node.sh "${EC2_USER}@${first_node_public_ip}:/tmp/bootstrap-node.sh"; then
-        echo "Error: Failed to copy bootstrap-node.sh to ${first_node_fqdn}."
+        ./bootstrap-node.sh "${EC2_USER}@${admin_node_public_ip}:/tmp/bootstrap-node.sh"; then
+        echo "Error: Failed to copy bootstrap-node.sh to ${admin_node_fqdn}."
         return 1
     fi
     
-    # Copy remote file copy script to the first node for join_cluster operations
+    # Copy remote file copy script to the admin node for join_cluster operations
     if [[ -f "./remote-file-copy.sh" ]]; then
         if ! scp -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            ./remote-file-copy.sh "${EC2_USER}@${first_node_public_ip}:/tmp/remote-file-copy.sh"; then
-            echo "Warning: Failed to copy remote-file-copy.sh to ${first_node_fqdn}. SSH key distribution may fail."
+            ./remote-file-copy.sh "${EC2_USER}@${admin_node_public_ip}:/tmp/remote-file-copy.sh"; then
+            echo "Warning: Failed to copy remote-file-copy.sh to ${admin_node_fqdn}. SSH key distribution may fail."
         else
-            echo "Successfully copied remote-file-copy.sh to ${first_node_fqdn}."
+            echo "Successfully copied remote-file-copy.sh to ${admin_node_fqdn}."
         fi
     fi
     
-    # Execute bootstrap script on the first node with 'first' argument
-    echo "Executing bootstrap-node.sh first on ${first_node_fqdn}..."
+    # Execute bootstrap script on the admin node with 'first' argument (MON node, no OSDs on dedicated admin)
+    echo "Executing bootstrap-node.sh first on ${admin_node_fqdn}..."
     if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "${EC2_USER}@${first_node_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh first"; then
-        echo "Error: Failed to bootstrap first node ${first_node_fqdn}."
+        "${EC2_USER}@${admin_node_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh first"; then
+        echo "Error: Failed to bootstrap admin node ${admin_node_fqdn}."
         return 1
     fi
     
-    echo "First node ${first_node_fqdn} bootstrapped successfully."
+    echo "Admin node ${admin_node_fqdn} bootstrapped successfully."
     
     # Wait for SSH key to be generated
-    echo "Waiting for SSH key to be available on ${first_node_fqdn}..."
+    echo "Waiting for SSH key to be available on ${admin_node_fqdn}..."
     local ssh_key_attempts=30
     local ssh_key_count=0
     while ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "${EC2_USER}@${first_node_public_ip}" "sudo test -f /etc/ceph/ceph.pub" 2>/dev/null; do
+        "${EC2_USER}@${admin_node_public_ip}" "sudo test -f /etc/ceph/ceph.pub" 2>/dev/null; do
         ssh_key_count=$((ssh_key_count + 1))
         if [[ ${ssh_key_count} -ge ${ssh_key_attempts} ]]; then
             echo "Error: SSH key did not become available after ${ssh_key_attempts} attempts."
@@ -551,45 +570,12 @@ function bootstrap_nodes() {
         echo "SSH key not yet available, waiting 10s... (Attempt ${ssh_key_count}/${ssh_key_attempts})"
         sleep 10
     done
-    echo "SSH key is available on ${first_node_fqdn}."
+    echo "SSH key is available on ${admin_node_fqdn}."
     
     
-    echo "=== Preparing additional nodes for cluster joining ==="
+    echo "=== Processing storage nodes (adding to cluster and creating OSDs) ==="
     
-    # Prepare other nodes (they will be added to cluster via orchestrator)
-    for i in $(seq 1 $((NUM_INSTANCES - 1))); do
-        local target_public_ip="${TARGET_PUBLIC_IPS[$i]}"
-        local target_fqdn="${TARGET_FQDNS[$i]}"
-        local target_internal_ip="${TARGET_INTERNAL_IPS[$i]}"
-        
-        if [[ -z "${target_public_ip}" || "${target_public_ip}" == "null" ]]; then
-            echo "Warning: Skipping ${target_fqdn} as its public IP is not available."
-            continue
-        fi
-        
-        echo "Running bootstrap-node.sh on ${target_fqdn} (existing or new instance)..."
-        
-        # Copy bootstrap script to the node
-        if ! scp -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            ./bootstrap-node.sh "${EC2_USER}@${target_public_ip}:/tmp/bootstrap-node.sh"; then
-            echo "Error: Failed to copy bootstrap-node.sh to ${target_fqdn}. Skipping this node."
-            continue
-        fi
-        
-        # Execute bootstrap script with 'others' argument (always run, even for existing instances)
-        echo "Executing bootstrap-node.sh others on ${target_fqdn}..."
-        if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "${EC2_USER}@${target_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
-            echo "Error: Failed to execute bootstrap-node.sh on ${target_fqdn}."
-            continue
-        fi
-        
-        echo "Bootstrap-node.sh completed on ${target_fqdn}."
-    done
-    
-    echo "=== Adding nodes to cluster and creating OSDs ==="
-    
-    # Add each additional node to cluster and create OSDs
+    # Add each storage node to cluster and create OSDs
     for i in $(seq 1 $((NUM_INSTANCES - 1))); do
         local target_public_ip="${TARGET_PUBLIC_IPS[$i]}"
         local target_fqdn="${TARGET_FQDNS[$i]}"
@@ -601,42 +587,45 @@ function bootstrap_nodes() {
             continue
         fi
         
-        echo "=== Processing ${target_fqdn} ==="
+        echo "=== Processing storage node ${target_fqdn} ==="
         
-        # Step 1: Prepare the node (copy scripts and run 'others' mode)
-        echo "Preparing ${target_fqdn}..."
+        # Step 1: Prepare the storage node
+        echo "Preparing storage node ${target_fqdn}..."
         if ! scp -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             ./bootstrap-node.sh "${EC2_USER}@${target_public_ip}:/tmp/bootstrap-node.sh"; then
             echo "Error: Failed to copy bootstrap-node.sh to ${target_fqdn}. Skipping this node."
             continue
         fi
         
-        # Run 'others' mode to prepare the node
+        # Run 'others' mode to prepare the storage node (with disks/OSDs)
         echo "Executing bootstrap-node.sh others on ${target_fqdn}..."
-        ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "${EC2_USER}@${target_public_ip}" "sudo bash /tmp/bootstrap-node.sh others"
+        if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${EC2_USER}@${target_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
+            echo "Error: Failed to execute bootstrap-node.sh others on ${target_fqdn}."
+            continue
+        fi
         
-        # Step 1.5: Distribute Ceph SSH key from first node to target node (LOCAL MACHINE operation)
-        echo "Distributing Ceph SSH key from first node to ${target_fqdn} (via local machine)..."
-        if remote_file_copy "${EC2_USER}@${first_node_public_ip}:/etc/ceph/ceph.pub" "${EC2_USER}@${target_public_ip}:/root/.ssh/authorized_keys"; then
+        # Step 2: Distribute Ceph SSH key from admin node to storage node (LOCAL MACHINE operation)
+        echo "Distributing Ceph SSH key from admin node to ${target_fqdn} (via local machine)..."
+        if remote_file_copy "${EC2_USER}@${admin_node_public_ip}:/etc/ceph/ceph.pub" "${EC2_USER}@${target_public_ip}:/root/.ssh/authorized_keys"; then
             echo "✓ Successfully distributed Ceph SSH key to root@${target_fqdn} (authorized_keys overwritten)"
         else
             echo "❌ Failed to distribute Ceph SSH key to ${target_fqdn}"
             echo "Ceph orchestrator will not be able to manage this node!"
-            echo "Manual fix: remote_file_copy '${EC2_USER}@${first_node_public_ip}:/etc/ceph/ceph.pub' '${EC2_USER}@${target_public_ip}:/root/.ssh/authorized_keys'"
+            echo "Manual fix: remote_file_copy '${EC2_USER}@${admin_node_public_ip}:/etc/ceph/ceph.pub' '${EC2_USER}@${target_public_ip}:/root/.ssh/authorized_keys'"
         fi
         
-        # Step 2: Add host to cluster from first node using join_cluster mode
-        echo "Adding ${target_fqdn} to cluster from first node..."
+        # Step 3: Add host to cluster from admin node using join_cluster mode
+        echo "Adding ${target_fqdn} to cluster from admin node..."
         if ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "${EC2_USER}@${first_node_public_ip}" \
-            "sudo FIRST_NODE_INTERNAL_IP=${first_node_internal_ip} TARGET_HOSTNAME=${target_hostname} TARGET_INTERNAL_IP=${target_internal_ip} bash /tmp/bootstrap-node.sh join_cluster"; then
+            "${EC2_USER}@${admin_node_public_ip}" \
+            "sudo FIRST_NODE_INTERNAL_IP=${admin_node_internal_ip} TARGET_HOSTNAME=${target_hostname} TARGET_INTERNAL_IP=${target_internal_ip} bash /tmp/bootstrap-node.sh join_cluster"; then
             echo "✓ Successfully added ${target_fqdn} to cluster"
             
-            # Step 3: Create OSDs on the target node from first node
-            echo "Creating OSDs on ${target_fqdn} from first node..."
+            # Step 4: Create OSDs on the storage node from admin node
+            echo "Creating OSDs on ${target_fqdn} from admin node..."
             if ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-                "${EC2_USER}@${first_node_public_ip}" \
+                "${EC2_USER}@${admin_node_public_ip}" \
                 "sudo TARGET_HOSTNAME=${target_hostname} HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh create_osds"; then
                 echo "✓ Successfully created OSDs on ${target_fqdn}"
             else
