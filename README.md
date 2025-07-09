@@ -234,22 +234,30 @@ ec2 list
 #### `ec2-create-instances.sh`
 **Primary cluster deployment orchestrator**
 
-Creates and configures AWS EC2 instances for Ceph cluster deployment.
+Creates and configures AWS EC2 instances for Ceph cluster deployment with separated admin and storage node roles.
 
 **Key Features:**
+- **Admin/Storage Separation**: Dedicated admin node for management, separate storage nodes for OSDs
 - **Instance Management**: Discovers existing instances, launches missing ones
-- **Storage Configuration**: Attaches configurable EBS volumes (currently 7x 125GB ST1)
+- **Storage Configuration**: Attaches configurable EBS volumes to storage nodes only (admin node has no additional storage)
 - **Network Setup**: Configures security groups with automatic SSH self-access rules
 - **DNS Integration**: Registers Route 53 A records for cluster nodes
-- **Ceph Orchestration**: Bootstraps first node, then adds additional nodes to cluster
+- **Ceph Orchestration**: Bootstraps admin node, then adds storage nodes to cluster
+
+**Node Architecture:**
+- **Admin Node**: Named `${INSTANCE_NAME}` (e.g., "ceph-test"), no EBS volumes, runs MON/MGR services
+- **Storage Nodes**: Named `${INSTANCE_NAME}-N` (e.g., "ceph-test-1", "ceph-test-2"), with EBS volumes and OSDs
 
 **Usage:**
 ```bash
-# Launch 3-node cluster (auto-detects AMI based on EC2_TYPE)
+# Launch admin node only
+INSTANCE_NAME=ceph-cluster ./ec2-create-instances.sh 1
+
+# Launch admin node + 2 storage nodes (3 total instances)
 INSTANCE_NAME=ceph-cluster ./ec2-create-instances.sh 3
 
-# Launch single node  
-INSTANCE_NAME=ceph-cluster ./ec2-create-instances.sh 1
+# Launch admin node + 3 storage nodes (4 total instances)
+INSTANCE_NAME=ceph-cluster ./ec2-create-instances.sh 4
 
 # Use x86_64 instance type (auto-selects x86_64 AMI)
 INSTANCE_NAME=ceph-cluster EC2_TYPE="t3.large" ./ec2-create-instances.sh 3
@@ -496,11 +504,13 @@ Cloud-init configuration for EC2 instances. Handles:
 
 ## Architecture
 
-- **First Node**: Acts as cluster orchestrator (runs MON, MGR services)
-- **Additional Nodes**: Join cluster and provide OSD services
+- **Admin Node**: Dedicated management node (runs MON, MGR services only, no OSDs)
+- **Storage Nodes**: Join cluster and provide OSD services with attached EBS volumes
 - **Client Node**: Dedicated client instance with multi-protocol access
-- **Storage**: ST1 volumes for cost-effective bulk storage
+- **Storage**: ST1 volumes for cost-effective bulk storage on storage nodes
 - **Network**: Private cluster communication + public management access
+
+**Note**: The admin node's local storage (ephemeral or root volume) can optionally be configured as SSD storage for MDS services when deploying CephFS, as described in the [CephFS File System Setup](#cephfs-file-system-setup) section below.
 
 ## Current Configuration
 
@@ -644,18 +654,35 @@ ceph fs set myfs max_mds 2
 ceph fs status myfs
 ```
 
-### Step 4: Deploy MDS Daemons
+### Step 4: Configure Admin Node for MDS Storage (Optional)
+
+The admin node's local storage can be used for high-performance metadata storage:
+
+```bash
+# Create OSD on admin node using local NVMe (if available) or root volume
+# This provides fast SSD storage for the metadata pool
+ceph orch daemon add osd ceph-admin:/dev/nvme0n1  # Adjust device as needed
+
+# Or auto-detect available devices on admin node
+ceph orch daemon add osd ceph-admin --all-available-devices
+```
+
+### Step 5: Deploy MDS Daemons
 
 ```bash
 # Deploy MDS daemons (one active, one standby per filesystem)
+# Consider placing on admin node and storage nodes for optimal performance
 ceph orch apply mds myfs --placement="3"
+
+# For optimal performance, place MDS on nodes with fast storage
+ceph orch apply mds myfs --placement="ceph-admin ceph-storage-1 ceph-storage-2"
 
 # Check MDS status
 ceph fs status
 ceph mds stat
 ```
 
-### Step 5: Client Access Setup
+### Step 6: Client Access Setup
 
 #### Prepare Client Authentication
 
