@@ -1,8 +1,8 @@
 #!/bin/bash
 
-CEPH_RELEASE=19.2.2  # replace this with the active release
-#CEPH_RELEASE=18.2.7
 
+# Which Ceph release do we want to use 
+: "${CEPH_RELEASE:="19.2.2"}"
 # Configuration: Number of HDDs that should share one SSD for DB
 : "${HDDS_PER_SSD:=2}"
 

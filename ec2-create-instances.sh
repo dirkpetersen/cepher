@@ -60,7 +60,7 @@ declare -a TARGET_INTERNAL_IPS # Array to store internal IPs for all target slot
 # This script launches a c7gd.medium EC2 instance with Rocky Linux 9
 
 # Get number of storage instances from command line
-NUM_INSTANCES=${1:-1}
+NUM_INSTANCES=${1:-3}
 
 if [[ ! "$NUM_INSTANCES" =~ ^[0-9][0-9]*$ ]]; then
     echo "Error: Number of storage instances must be a non-negative integer"
