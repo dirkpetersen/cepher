@@ -84,8 +84,9 @@ TOTAL_INSTANCES=$((1 + EXTRA_NODES + NUM_INSTANCES))
 : "${EBS_TYPE:="st1"}" # st1 is platter based, or use  "gp3" "gp2" "st1" "sc1" "io1" "io2" "standard"
 : "${EBS_SIZE:="125"}" # smallest allowed for st1 is 125GB
 : "${EBS_QTY:="3"}" # "normally 6"
-: "${HDDS_PER_SSD:="3"}" # "number of HDDs that use one SSD, normally 6"
 : "${EXTRA_NODES:="0"}" # "number of extra nodes with no EBS volumnes in addition to the the very first node
+: "${HDDS_PER_SSD:="3"}" # "number of HDDs that use one SSD, normally 6, in bootstrap-node.sh"
+: "${CEPH_RELEASE:="19.2.2"}" # "Ceph release in bootstrap-node.sh"
 
 # Auto-detect AMI based on instance type architecture if AMI_IMAGE not explicitly set
 if [[ -z "${AMI_IMAGE:-}" ]]; then
@@ -575,7 +576,7 @@ function bootstrap_nodes() {
     # Execute bootstrap script on the admin node with 'first' argument (MON node, no OSDs on dedicated admin)
     echo "Executing bootstrap-node.sh first on ${admin_node_fqdn}..."
     if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "${EC2_USER}@${admin_node_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh first"; then
+        "${EC2_USER}@${admin_node_public_ip}" "sudo CEPH_RELEASE=${CEPH_RELEASE} HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh first"; then
         echo "Error: Failed to bootstrap admin node ${admin_node_fqdn}."
         return 1
     fi
@@ -630,7 +631,7 @@ function bootstrap_nodes() {
         # Run 'others' mode to prepare the extra admin node (no disks/OSDs)
         echo "Executing bootstrap-node.sh others on ${target_fqdn}..."
         if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "${EC2_USER}@${target_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
+            "${EC2_USER}@${target_public_ip}" "sudo CEPH_RELEASE=${CEPH_RELEASE} HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
             echo "Error: Failed to execute bootstrap-node.sh others on ${target_fqdn}."
             continue
         fi
@@ -683,7 +684,7 @@ function bootstrap_nodes() {
         # Run 'others' mode to prepare the storage node (with disks/OSDs)
         echo "Executing bootstrap-node.sh others on ${target_fqdn}..."
         if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "${EC2_USER}@${target_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
+            "${EC2_USER}@${target_public_ip}" "sudo CEPH_RELEASE=${CEPH_RELEASE} HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
             echo "Error: Failed to execute bootstrap-node.sh others on ${target_fqdn}."
             continue
         fi
@@ -709,7 +710,7 @@ function bootstrap_nodes() {
             echo "Creating OSDs on ${target_fqdn} from admin node..."
             if ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                 "${EC2_USER}@${admin_node_public_ip}" \
-                "sudo TARGET_HOSTNAME=${target_hostname} HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh create_osds"; then
+                "sudo CEPH_RELEASE=${CEPH_RELEASE} TARGET_HOSTNAME=${target_hostname} HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh create_osds"; then
                 echo "✓ Successfully created OSDs on ${target_fqdn}"
             else
                 echo "Warning: Failed to create OSDs on ${target_fqdn}"
