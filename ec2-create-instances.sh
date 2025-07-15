@@ -404,7 +404,7 @@ EOF
 
 function prepare_new_nodes() {
     echo "Preparing all new instances (setting hostname, installing packages)..."
-    for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+    for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
         if [[ "${IS_INSTANCE_NEW[$i]}" == true ]]; then
             local instance_public_ip="${TARGET_PUBLIC_IPS[$i]}"
             local fqdn="${TARGET_FQDNS[$i]}"
