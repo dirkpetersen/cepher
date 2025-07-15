@@ -12,6 +12,24 @@ The toolkit provides end-to-end automation for:
 - Ceph client deployment with multi-protocol support
 - Lambda-based monitoring and cleanup functions
 
+
+## Quickstart
+
+Once you have setup your ssh keys for EC2 (see below) you can use the `ec2-create-instances.sh` script to launch a Ceph cluster, examples: 
+
+```
+# launch a cluster with 3 Storage nodes (OSD nodes, myceph-1, myceph-2, myceph-3) and 1 admin node (myceph)
+INSTANCE_NAME=myceph ./ec2-create-instances.sh
+
+# launch a similar cluster but with 2 more admin nodes (without OSD) to have more SSD for metadata services 
+INSTANCE_NAME=myceph EXTRA_NODES=2 ./ec2-create-instances.sh
+
+# launch a cluster with Ceph release Reef and a single OSD and one admin node 
+INSTANCE_NAME=myceph CEPH_RELEASE=18.2.7 ./ec2-create-instances.sh 1
+
+```
+
+
 ## AWS IAM Permissions Required
 
 ### Minimum Required Permissions
