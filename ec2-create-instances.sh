@@ -26,12 +26,23 @@ fi
 # - Outputting SSH commands to connect to the newly created instances.
 #
 # Usage:
-#   ./ec2-create-instances.sh [number_of_instances]
+#   ./ec2-create-instances.sh [number_of_storage_instances]
+#
+# Node Architecture:
+#   - Always 1 main admin node (index 0): Management node, no EBS volumes
+#   - EXTRA_NODES extra admin nodes (indices 1 to EXTRA_NODES): Additional admin nodes, no EBS volumes  
+#   - NUM_INSTANCES storage nodes (indices EXTRA_NODES+1 to EXTRA_NODES+NUM_INSTANCES): Storage nodes with EBS volumes and OSDs
+#   - Total instances: 1 + EXTRA_NODES + NUM_INSTANCES
+#
+# Examples:
+#   NUM_INSTANCES=0, EXTRA_NODES=0 → 1 admin node (total: 1)
+#   NUM_INSTANCES=3, EXTRA_NODES=0 → 1 admin + 3 storage nodes (total: 4)
+#   NUM_INSTANCES=3, EXTRA_NODES=2 → 1 admin + 2 extra admin + 3 storage nodes (total: 6)
 #
 # Environment variables can be used to override default configurations, e.g.:
 #   AWS_REGION, EC2_TYPE, AMI_IMAGE, ROOT_VOLUME_SIZE, INSTANCE_NAME,
 #   DOMAIN, CLOUD_INIT_FILE, EC2_USER, EC2_SECURITY_GROUPS, EBS_TYPE,
-#   EBS_SIZE, EBS_QTY, EC2_KEY_NAME, EC2_KEY_FILE, AWS_AZ.
+#   EBS_SIZE, EBS_QTY, EC2_KEY_NAME, EC2_KEY_FILE, AWS_AZ, EXTRA_NODES.
 #
 # EC2_SECURITY_GROUPS: Space-separated list of security group names.
 #   Examples:
@@ -48,13 +59,16 @@ declare -a TARGET_INTERNAL_IPS # Array to store internal IPs for all target slot
 # AWS EC2 Instance Launch Script
 # This script launches a c7gd.medium EC2 instance with Rocky Linux 9
 
-# Get number of instances from command line
+# Get number of storage instances from command line
 NUM_INSTANCES=${1:-1}
 
-if [[ ! "$NUM_INSTANCES" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Error: Number of instances must be a positive integer"
+if [[ ! "$NUM_INSTANCES" =~ ^[0-9][0-9]*$ ]]; then
+    echo "Error: Number of storage instances must be a non-negative integer"
     exit 1
 fi
+
+# Calculate total instances: 1 main admin + EXTRA_NODES + NUM_INSTANCES (storage)
+TOTAL_INSTANCES=$((1 + EXTRA_NODES + NUM_INSTANCES))
 
 # Configuration Variables
 : "${INSTANCE_NAME:="ceph-test"}"
@@ -71,6 +85,7 @@ fi
 : "${EBS_SIZE:="125"}" # smallest allowed for st1 is 125GB
 : "${EBS_QTY:="3"}" # "normally 6"
 : "${HDDS_PER_SSD:="3"}" # "number of HDDs that use one SSD, normally 6"
+: "${EXTRA_NODES:="0"}" # "number of extra nodes with no EBS volumnes in addition to the the very first node
 
 # Auto-detect AMI based on instance type architecture if AMI_IMAGE not explicitly set
 if [[ -z "${AMI_IMAGE:-}" ]]; then
@@ -101,17 +116,22 @@ fi
 
 
 function discover_or_launch_instances() {
-    echo "Discovering existing instances and launching missing ones up to target count: ${NUM_INSTANCES}..."
+    echo "Discovering existing instances and launching missing ones up to target count: ${TOTAL_INSTANCES} (1 admin + ${EXTRA_NODES} extra admin + ${NUM_INSTANCES} storage)..."
     local indices_to_create=() # 0-based indices of instances to create
 
-    for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+    for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
         if [[ $i -eq 0 ]]; then
-            # First instance is the admin node (no suffix)
+            # First instance is the main admin node (no suffix)
             local fqdn="${INSTANCE_NAME}.${DOMAIN}"
             local tag_name="${INSTANCE_NAME}"
+        elif [[ $i -le $EXTRA_NODES ]]; then
+            # Extra admin nodes (no EBS volumes)
+            local extra_admin_num=$i
+            local fqdn="${INSTANCE_NAME}-admin-${extra_admin_num}.${DOMAIN}"
+            local tag_name="${INSTANCE_NAME}-admin-${extra_admin_num}"
         else
-            # Subsequent instances are storage nodes with numbered suffix
-            local storage_node_num=$i
+            # Storage nodes with numbered suffix (numbering starts from 1)
+            local storage_node_num=$((i - EXTRA_NODES))
             local fqdn="${INSTANCE_NAME}-${storage_node_num}.${DOMAIN}"
             local tag_name="${INSTANCE_NAME}-${storage_node_num}"
         fi
@@ -299,29 +319,35 @@ function discover_or_launch_instances() {
             TARGET_INSTANCE_IDS[$target_array_index]=$new_instance_id
             
             if [[ $target_array_index -eq 0 ]]; then
-                # Admin node (no suffix)
+                # Main admin node (no suffix)
                 local tag_name="${INSTANCE_NAME}"
+            elif [[ $target_array_index -le $EXTRA_NODES ]]; then
+                # Extra admin node
+                local tag_name="${INSTANCE_NAME}-admin-${target_array_index}"
             else
                 # Storage node with numbered suffix
-                local tag_name="${INSTANCE_NAME}-${target_array_index}"
+                local storage_node_num=$((target_array_index - EXTRA_NODES))
+                local tag_name="${INSTANCE_NAME}-${storage_node_num}"
             fi
             
             aws ec2 create-tags --resources ${new_instance_id} --tags "Key=Name,Value=${tag_name}"
             echo "Launched new instance ${tag_name} (ID: ${new_instance_id}). It will be fully configured."
         done
     else
-        echo "All $NUM_INSTANCES target instances already exist."
+        echo "All $TOTAL_INSTANCES target instances already exist."
     fi
     echo "Instance discovery and launch phase complete."
 }
 
 function add_disks() {
-    echo "Adding disks to newly created storage instances (skipping admin node)..."
-    for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+    echo "Adding disks to newly created storage instances (skipping admin nodes)..."
+    for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
         if [[ "${IS_INSTANCE_NEW[$i]}" == true ]]; then
-            if [[ $i -eq 0 ]]; then
+            if [[ $i -le $EXTRA_NODES ]]; then
+                # Skip all admin nodes (main admin + extra admin nodes)
                 echo "Skipping disk attachment for admin node ${TARGET_FQDNS[$i]} (no storage required)"
             else
+                # Add disks to storage nodes only
                 local instance_id=${TARGET_INSTANCE_IDS[$i]}
                 echo "Adding ${EBS_QTY} ${EBS_TYPE} volumes (${EBS_SIZE}GB) to new storage instance ${TARGET_FQDNS[$i]} (ID: ${instance_id})"
                 ./ebs-create-attach.sh "${instance_id}" "${EBS_TYPE}" "${EBS_SIZE}" "${EBS_QTY}"
@@ -333,7 +359,7 @@ function add_disks() {
 function register_dns() {
   hosted_zone_id=$(aws route53 list-hosted-zones --query 'HostedZones[0].Id' --output text)
   if [[ -n "$hosted_zone_id" && "$hosted_zone_id" != "None" ]]; then
-    for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+    for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
       local fqdn="${TARGET_FQDNS[$i]}"
       local public_ip="${TARGET_PUBLIC_IPS[$i]}"
 
@@ -430,7 +456,7 @@ function wait_for_instance() {
   
   while [[ ${attempt} -lt ${max_attempts} ]]; do
       all_ready=true
-      for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+      for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
           local instance_id=${TARGET_INSTANCE_IDS[$i]}
           if [[ -z "$instance_id" ]]; then # Should not happen if discover_or_launch_instances worked
               all_ready=false; break
@@ -471,7 +497,7 @@ function wait_for_instance() {
   fi
 
   echo "Waiting for SSH to become available on all instances..."
-  for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+  for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
       local public_ip=${TARGET_PUBLIC_IPS[$i]}
       local fqdn=${TARGET_FQDNS[$i]}
       local instance_id=${TARGET_INSTANCE_IDS[$i]}
@@ -509,12 +535,12 @@ function wait_for_instance() {
 }
 
 function bootstrap_nodes() {
-    if [[ $NUM_INSTANCES -eq 0 ]]; then
+    if [[ $TOTAL_INSTANCES -eq 0 ]]; then
         echo "No instances to bootstrap."
         return
     fi
     
-    echo "Bootstrapping ${NUM_INSTANCES} nodes with bootstrap-node.sh..."
+    echo "Bootstrapping ${TOTAL_INSTANCES} nodes (1 admin + ${EXTRA_NODES} extra admin + ${NUM_INSTANCES} storage) with bootstrap-node.sh..."
     
     # Bootstrap the admin node (index 0) as the MON node (no OSDs)
     local admin_node_index=0
@@ -573,10 +599,67 @@ function bootstrap_nodes() {
     echo "SSH key is available on ${admin_node_fqdn}."
     
     
+    echo "=== Processing extra admin nodes (adding to cluster, no OSDs) ==="
+    
+    # Process extra admin nodes first (indices 1 to EXTRA_NODES)
+    for i in $(seq 1 $EXTRA_NODES); do
+        if [[ $i -ge $TOTAL_INSTANCES ]]; then
+            break  # Don't process beyond total instance count
+        fi
+        
+        local target_public_ip="${TARGET_PUBLIC_IPS[$i]}"
+        local target_fqdn="${TARGET_FQDNS[$i]}"
+        local target_internal_ip="${TARGET_INTERNAL_IPS[$i]}"
+        local target_hostname="${target_fqdn%%.*}"  # Extract short hostname
+        
+        if [[ -z "${target_public_ip}" || "${target_public_ip}" == "null" ]]; then
+            echo "Warning: Skipping ${target_fqdn} as its public IP is not available."
+            continue
+        fi
+        
+        echo "=== Processing extra admin node ${target_fqdn} ==="
+        
+        # Step 1: Prepare the extra admin node
+        echo "Preparing extra admin node ${target_fqdn}..."
+        if ! scp -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            ./bootstrap-node.sh "${EC2_USER}@${target_public_ip}:/tmp/bootstrap-node.sh"; then
+            echo "Error: Failed to copy bootstrap-node.sh to ${target_fqdn}. Skipping this node."
+            continue
+        fi
+        
+        # Run 'others' mode to prepare the extra admin node (no disks/OSDs)
+        echo "Executing bootstrap-node.sh others on ${target_fqdn}..."
+        if ! ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${EC2_USER}@${target_public_ip}" "sudo HDDS_PER_SSD=${HDDS_PER_SSD:-6} bash /tmp/bootstrap-node.sh others"; then
+            echo "Error: Failed to execute bootstrap-node.sh others on ${target_fqdn}."
+            continue
+        fi
+        
+        # Step 2: Distribute Ceph SSH key from admin node to extra admin node
+        echo "Distributing Ceph SSH key from admin node to ${target_fqdn} (via local machine)..."
+        if remote_file_copy "${EC2_USER}@${admin_node_public_ip}:/etc/ceph/ceph.pub" "${EC2_USER}@${target_public_ip}:/root/.ssh/authorized_keys"; then
+            echo "✓ Successfully distributed Ceph SSH key to root@${target_fqdn} (authorized_keys overwritten)"
+        else
+            echo "❌ Failed to distribute Ceph SSH key to ${target_fqdn}"
+            echo "Ceph orchestrator will not be able to manage this node!"
+            echo "Manual fix: remote_file_copy '${EC2_USER}@${admin_node_public_ip}:/etc/ceph/ceph.pub' '${EC2_USER}@${target_public_ip}:/root/.ssh/authorized_keys'"
+        fi
+        
+        # Step 3: Add host to cluster from admin node using join_cluster mode
+        echo "Adding ${target_fqdn} to cluster from admin node..."
+        if ssh -i "${EC2_KEY_FILE}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${EC2_USER}@${admin_node_public_ip}" \
+            "sudo FIRST_NODE_INTERNAL_IP=${admin_node_internal_ip} TARGET_HOSTNAME=${target_hostname} TARGET_INTERNAL_IP=${target_internal_ip} bash /tmp/bootstrap-node.sh join_cluster"; then
+            echo "✓ Successfully added ${target_fqdn} to cluster (no OSDs will be created)"
+        else
+            echo "Warning: Failed to add ${target_fqdn} to cluster"
+        fi
+    done
+    
     echo "=== Processing storage nodes (adding to cluster and creating OSDs) ==="
     
-    # Add each storage node to cluster and create OSDs
-    for i in $(seq 1 $((NUM_INSTANCES - 1))); do
+    # Add each storage node to cluster and create OSDs (indices EXTRA_NODES+1 to TOTAL_INSTANCES-1)
+    for i in $(seq $((EXTRA_NODES + 1)) $((TOTAL_INSTANCES - 1))); do
         local target_public_ip="${TARGET_PUBLIC_IPS[$i]}"
         local target_fqdn="${TARGET_FQDNS[$i]}"
         local target_internal_ip="${TARGET_INTERNAL_IPS[$i]}"
@@ -667,14 +750,14 @@ bootstrap_nodes
 echo -e "\nInstances created on ${EC2_TYPE} with AMI ${AMI_IMAGE}"
 
 echo -e "\nInstance Information:"
-for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
     fqdn="${TARGET_FQDNS[$i]}"
     echo "${fqdn}, external IP: ${TARGET_PUBLIC_IPS[$i]:-N/A}, internal IP: ${TARGET_INTERNAL_IPS[$i]:-N/A}"
 done
 
 echo -e "\nSSH commands to connect:"
 FILE2=~${EC2_KEY_FILE#"$HOME"}
-for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+for i in $(seq 0 $((TOTAL_INSTANCES - 1))); do
     fqdn="${TARGET_FQDNS[$i]}"
     echo "ssh -i '${FILE2}' ${EC2_USER}@${fqdn}"
 done
